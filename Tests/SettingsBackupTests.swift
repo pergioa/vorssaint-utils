@@ -83,6 +83,7 @@ enum SettingsBackupTests {
                 && backupKeys.contains(DefaultsKey.screenshotClipboardShortcutEnabled)
                 && backupKeys.contains(DefaultsKey.screenshotClipboardShortcut)
                 && backupKeys.contains(DefaultsKey.screenshotPreviewPosition)
+                && backupKeys.contains(DefaultsKey.screenshotPreviewTakesFocus)
                 && backupKeys.contains(DefaultsKey.screenshotLoupeRememberZoom)
                 && backupKeys.contains(DefaultsKey.screenshotLoupeDefaultZoom)
                 && backupKeys.contains(DefaultsKey.screenshotLoupeSteppedZoomByDefault)

@@ -241,8 +241,48 @@ enum MetricFormatTests {
         expect(TemperatureSensorSelector.platform(brandString: "Apple M5") == .appleM5Family,
                "Apple M5 uses the mapped CPU core sensor set")
         expect(TemperatureSensorSelector.platform(brandString: "Apple M10") == .unmappedAppleSilicon
-               && TemperatureSensorSelector.platform(brandString: "Apple A18 Pro") == .unmappedAppleSilicon,
-               "unmapped Apple Silicon never falls through to arbitrary CPU sensors")
+               && TemperatureSensorSelector.platform(brandString: "Apple A19 Pro") == .unmappedAppleSilicon,
+               "an Apple chip with no verified core map is recognised as its own case")
+        let a18Platform = TemperatureSensorSelector.platform(brandString: "Apple A18 Pro")
+        expect(a18Platform == .generic,
+               "A18 Pro preserves the CPU temperature path available before 3.3.3")
+        expect(TemperatureSensorSelector.platform(brandString: "  Apple A18 Pro\n") == a18Platform,
+               "A18 Pro identification ignores surrounding whitespace")
+        expect(TemperatureSensorSelector.platform(brandString: "Apple A18 Pro Max") == .unmappedAppleSilicon,
+               "A18 Pro compatibility does not guess support for another chip")
+        expect(!TemperatureSensorSelector.hasCPUCoreSet(platform: a18Platform),
+               "A18 Pro discovery keeps its fallback readings without inventing a per-core map")
+        // A small hardware diagnostic sample, followed by synthetic failure cases.
+        let a18Sensors: [(key: String, value: Double)] = [
+            ("Te05", 66.3), ("Tp05", 66.6), ("Tp0t", 75.0),
+            ("Tg0D", 63.1), ("TB0T", 25.1),
+        ]
+        let a18CPUReadings = a18Sensors.filter {
+            TemperatureSensorSelector.isCPUTemperatureKey($0.key, platform: a18Platform)
+        }
+        expect(a18CPUReadings.map(\.key) == ["Te05", "Tp05", "Tp0t"],
+               "A18 Pro discovery retains both CPU families and excludes GPU and battery")
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: a18CPUReadings, platform: a18Platform
+        ) ?? -1, 75.0, "A18 Pro restores the previous hottest CPU-family reading")
+        for key in ["Te05", "Tp05", "Tp0t"] {
+            expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+                readings: [(key, 66.3)], platform: a18Platform
+            ) ?? -1, 66.3, "A18 Pro keeps a readable CPU sensor when other sensors are absent: \(key)")
+        }
+        let a18InvalidReadings: [(key: String, value: Double)] = [
+            ("Tp00", 0), ("Tp01", 7), ("Te05", 125),
+            ("Te0S", .nan), ("Tp05", .infinity),
+        ]
+        expect(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: a18InvalidReadings, platform: a18Platform
+        ) == nil, "A18 Pro rejects broken readings instead of fabricating a temperature")
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: a18InvalidReadings + [("Tp0t", 75)], platform: a18Platform
+        ) ?? -1, 75, "broken A18 Pro sensors do not suppress another valid reading")
+        expect(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: [], platform: a18Platform
+        ) == nil, "A18 Pro remains unavailable when no CPU sensor answers")
         expect(TemperatureSensorSelector.platform(brandString: "Generic CPU") == .generic,
                "other processors keep the generic CPU sensor path")
         expect(TemperatureSensorSelector.isCPUTemperatureKey("Tf4E", platform: .appleM3Family)
@@ -263,6 +303,27 @@ enum MetricFormatTests {
             readings: [("Tp1h", 7.0), ("Tp1t", 6.0)],
             platform: .appleM2Family
         ) == nil, "M2 family rejects a sample made only of broken low readings")
+        // Some Macs of a mapped generation do not carry that generation's core
+        // sensors at all. Before 3.3.3 they showed the hottest CPU-family
+        // reading; the restriction that replaced it left them with nothing.
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: [("Tp02", 44.0), ("Te04", 51.0)],
+            platform: .appleM1Family
+        ) ?? -1, 51.0, "an M1 without its mapped core sensors reads its CPU family again")
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: [("Tp02", 44.0), ("Te04", 51.0)],
+            platform: .unmappedAppleSilicon
+        ) ?? -1, 51.0, "an Apple chip with no map at all reads its CPU family again")
+        expect(TemperatureSensorSelector.isCPUTemperatureKey("Tp01", platform: .unmappedAppleSilicon)
+                && TemperatureSensorSelector.isCPUTemperatureKey("Te05", platform: .unmappedAppleSilicon)
+                && !TemperatureSensorSelector.isCPUTemperatureKey("Tg0D", platform: .unmappedAppleSilicon),
+               "an unmapped Apple chip discovers its CPU families and still excludes the GPU")
+        // A mapped sensor that failed this sample is a different matter: it is
+        // never quietly replaced by whatever else the Mac happens to expose.
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: [("Tp01", 7.0), ("Tp0b", 44.0), ("Tp02", 71.0)],
+            platform: .appleM1Family
+        ) ?? -1, 44.0, "a readable mapped M1 core outranks a hotter sensor outside the map")
         var chipTemperatureCache: CachedSensorReading?
         expectClose(TemperatureSensorSelector.stabilizedTemperature(
             49.25, cache: &chipTemperatureCache, now: 100, maxAge: 30,
@@ -311,16 +372,59 @@ enum MetricFormatTests {
             platform: .appleM4Family
         )
         expectClose(m4InvalidCPU ?? -1, 49.25, "mapped CPU core selection ignores invalid temperatures")
-        let m4FallbackCPU = TemperatureSensorSelector.displayedCPUTemperature(
+        // A mapped core that answers always wins, so an auxiliary hotspot can
+        // never stand in for one while the core set is talking. A tick with no
+        // plausible core reading falls back to the CPU families, exactly as it
+        // did before 3.3.3.
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: [("Tp01", 44.5), ("Tp0W", 67.0)],
+            platform: .appleM4Family
+        ) ?? -1, 44.5, "a mapped core outranks a hotter auxiliary sensor")
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
             readings: [("Tp00", 44.5), ("Tp0W", 67.0)],
             platform: .appleM4Family
-        )
-        expect(m4FallbackCPU == nil,
-               "mapped Apple Silicon never substitutes an auxiliary hotspot for a missing core sensor")
+        ) ?? -1, 67.0, "an M4 carrying none of its mapped cores reads its CPU family again")
         expect(TemperatureSensorSelector.displayedCPUTemperature(
-            readings: [("Tp00", 44.5), ("Tp0W", 113.0)],
+            readings: [("Tp0W", 130.0)],
             platform: .unmappedAppleSilicon
-        ) == nil, "unmapped Apple Silicon hides unknown sensors instead of reporting an unsafe value")
+        ) == nil, "the compatibility reading still refuses an implausible temperature")
+
+        // Real sensor dumps, so the restored reading is checked against the
+        // machines that lost it rather than against invented keys.
+        //
+        // Mac mini (2020), Macmini9,1, Apple M1, reported on 3.3.2 (issue
+        // #1353): not one of its sensors is in this chip generation's mapped
+        // core set, which is what 3.3.3 then required before showing anything.
+        let macMini9_1M1Sensors: [(key: String, value: Double)] = [
+            ("Te0a", 36.31), ("Te0b", 36.31), ("Te0x", 38.08), ("Te0z", 38.08),
+            ("Te3a", 37.95), ("Te3b", 46.65), ("Te3x", 40.02), ("Te3z", 60.02),
+            ("Tp2a", 38.94), ("Tp2b", 48.04), ("Tp2x", 45.98), ("Tp2z", 60.98),
+            ("Tp3a", 39.62), ("Tp3b", 47.02), ("Tp3x", 48.59), ("Tp3z", 60.59),
+            ("Tp4a", 40.71), ("Tp4b", 50.81), ("Tp4x", 47.61), ("Tp4z", 64.61),
+            ("Tp5a", 38.77), ("Tp5b", 48.97), ("Tp5x", 41.22), ("Tp5z", 57.22),
+            ("Tp7a", 38.84), ("Tp7b", 47.94), ("Tp7x", 43.00), ("Tp7z", 58.00),
+            ("Tp8a", 39.50), ("Tp8b", 46.90), ("Tp8x", 45.34), ("Tp8z", 57.34),
+            ("Tp9a", 40.15), ("Tp9b", 50.25), ("Tp9x", 44.97), ("Tp9z", 61.97),
+        ]
+        expect(macMini9_1M1Sensors.allSatisfy {
+            TemperatureSensorSelector.isCPUTemperatureKey($0.key, platform: .appleM1Family)
+        } && !macMini9_1M1Sensors.contains {
+            TemperatureSensorSelector.isCPUCoreKey($0.key, platform: .appleM1Family)
+        }, "this M1 exposes CPU sensors, none of them in the mapped core set")
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: macMini9_1M1Sensors, platform: .appleM1Family
+        ) ?? -1, 64.61, "this M1 shows the CPU temperature it showed on 3.3.2 again")
+
+        // This project's own Mac, Apple M4, read with --sensors: its mapped
+        // cores answer and sit well below the hottest auxiliary sensor, so it
+        // is proof that restoring the sweep leaves a mapped Mac untouched.
+        let appleM4Sensors: [(key: String, value: Double)] = [
+            ("Te05", 45.01), ("Te09", 44.70), ("Te0H", 45.29), ("Te0S", 44.84),
+            ("Tp01", 46.12), ("Tp00", 39.02), ("Tp0W", 62.56), ("Tp3X", 69.00),
+        ]
+        expectClose(TemperatureSensorSelector.displayedCPUTemperature(
+            readings: appleM4Sensors, platform: .appleM4Family
+        ) ?? -1, 46.12, "a mapped M4 keeps reading its own cores, not the hotter hotspot")
         let genericCPU = TemperatureSensorSelector.displayedCPUTemperature(
             readings: [("Tp00", 44.5), ("Tp01", 51.6)],
             platform: .generic

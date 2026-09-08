@@ -255,6 +255,12 @@ enum LocalizationTests {
             expect(!strings.switcherCurrentSpaceOnlyCaption.isEmpty
                    && !strings.switcherCurrentSpaceOnlyCaption.contains("—"),
                    "\(prefix) App Switcher current-desktop caption is present without em dash")
+            expect(!strings.switcherCurrentDisplayOnly.isEmpty
+                   && !strings.switcherCurrentDisplayOnly.contains("—"),
+                   "\(prefix) App Switcher current-display title is present without em dash")
+            expect(!strings.switcherCurrentDisplayOnlyCaption.isEmpty
+                   && !strings.switcherCurrentDisplayOnlyCaption.contains("—"),
+                   "\(prefix) App Switcher current-display caption is present without em dash")
             expect([strings.switcherScreenPlacementLabel,
                     strings.switcherScreenPlacementPointer,
                     strings.switcherScreenPlacementMenuBar,
