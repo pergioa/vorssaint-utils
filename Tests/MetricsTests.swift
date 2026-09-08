@@ -2030,49 +2030,48 @@ struct MetricsTests {
 
         // MARK: Memory used
 
-        let used = MetricFormat.memoryUsed(totalBytes: 16 * 1024,
-                                           appBytes: 5 * 1024,
-                                           pageSize: 1024,
-                                           wiredPages: 2,
-                                           compressorPages: 1,
-                                           tagStoragePages: 1)
-        expect(used == 9 * 1024, "memory used includes app, wired, compressed and tagged storage")
-        expect(MetricFormat.memoryUsed(totalBytes: 16, appBytes: 20,
-                                       pageSize: 1, wiredPages: 0,
-                                       compressorPages: 0, tagStoragePages: 0) == 16,
-               "memory used clamps impossible used memory")
+        let accountedUsed = MetricFormat.memoryUsed(totalBytes: 16 * 1024,
+                                                    pageSize: 1024,
+                                                    freePages: 1,
+                                                    purgeablePages: 2,
+                                                    fileBackedPages: 3)
+        expect(accountedUsed == 10 * 1024,
+               "memory used subtracts every reclaimable page from physical memory")
+        let reservedUsed = MetricFormat.memoryUsed(totalBytes: 17 * 1024,
+                                                   pageSize: 1024,
+                                                   freePages: 1,
+                                                   purgeablePages: 2,
+                                                   fileBackedPages: 3)
+        expect(reservedUsed == accountedUsed + 1024,
+               "memory used derives a model-specific reserved region instead of hardcoding one")
+        expect(MetricFormat.memoryUsed(totalBytes: 16, pageSize: 1,
+                                       freePages: 20, purgeablePages: 0,
+                                       fileBackedPages: 0) == 0,
+               "memory used clamps impossible reclaimable memory")
+        expect(MetricFormat.memoryUsed(totalBytes: 16, pageSize: 1,
+                                       freePages: UInt64.max, purgeablePages: 1,
+                                       fileBackedPages: 0) == 0,
+               "memory used rejects overflowing kernel counters")
 
         var vmStats = vorssaint_vm_statistics64_rev3_t()
+        vmStats.free_count = 1
         vmStats.wire_count = 2
         vmStats.purgeable_count = 3
         vmStats.compressor_page_count = 4
         vmStats.external_page_count = 5
         vmStats.internal_page_count = 6
-        vmStats.total_tag_storage_pages = 7
         expect(VMStatisticsDecoder.decode(vmStats,
                                           returnedCount: VMStatisticsDecoder.rev1Count - 1) == nil,
                "VM statistics rejects a truncated legacy payload")
         expect(VMStatisticsDecoder.decode(vmStats,
                                           returnedCount: VMStatisticsDecoder.rev1Count) ==
-                   VMStatisticsSnapshot(wiredPages: 2,
+                   VMStatisticsSnapshot(freePages: 1,
+                                        wiredPages: 2,
                                         purgeablePages: 3,
                                         compressorPages: 4,
                                         externalPages: 5,
-                                        internalPages: 6,
-                                        tagStoragePages: 0),
+                                        internalPages: 6),
                "VM statistics decodes the typed legacy prefix")
-        expect(VMStatisticsDecoder.decode(vmStats,
-                                          returnedCount: VMStatisticsDecoder.rev2Count)?.tagStoragePages == 0,
-               "VM statistics does not read tagged storage from a rev2 payload")
-        expect(VMStatisticsDecoder.decode(vmStats,
-                                          returnedCount: VMStatisticsDecoder.rev3Count)?.tagStoragePages == 7,
-               "VM statistics reads tagged storage from a rev3 payload")
-        expect(VMStatisticsDecoder.validatedTagStoragePages(2, totalBytes: 16, pageSize: 4) == 2,
-               "VM statistics accepts plausible tagged storage")
-        expect(VMStatisticsDecoder.validatedTagStoragePages(5, totalBytes: 16, pageSize: 4) == 0,
-               "VM statistics rejects tagged storage larger than physical memory")
-        expect(VMStatisticsDecoder.validatedTagStoragePages(1, totalBytes: 16, pageSize: 0) == 0,
-               "VM statistics rejects tagged storage without a page size")
 
         // MARK: App memory
 

@@ -52,20 +52,15 @@ enum SystemInfo {
         guard let stats = VMStatisticsDecoder.read() else { return nil }
         let total = ProcessInfo.processInfo.physicalMemory
         let pageSize = UInt64(vm_kernel_page_size)
-        let tagStoragePages = VMStatisticsDecoder.validatedTagStoragePages(
-            stats.tagStoragePages,
-            totalBytes: total,
-            pageSize: pageSize)
         let appUsed = MetricFormat.appMemory(totalBytes: total,
                                              pageSize: pageSize,
                                              internalPages: stats.internalPages,
                                              purgeablePages: stats.purgeablePages)
         let used = MetricFormat.memoryUsed(totalBytes: total,
-                                           appBytes: appUsed,
                                            pageSize: pageSize,
-                                           wiredPages: stats.wiredPages,
-                                           compressorPages: stats.compressorPages,
-                                           tagStoragePages: tagStoragePages)
+                                           freePages: stats.freePages,
+                                           purgeablePages: stats.purgeablePages,
+                                           fileBackedPages: stats.externalPages)
         let compressed = MetricFormat.compressedMemory(totalBytes: total,
                                                        pageSize: pageSize,
                                                        compressorPages: stats.compressorPages)
