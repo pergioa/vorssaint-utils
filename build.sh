@@ -295,6 +295,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/Recorder/RecordingSharingSupport.swift \
         Sources/Vorssaint/Services/PrivateFileStore.swift \
         Sources/Vorssaint/Services/Recorder/RecorderTakeStore.swift \
+        Sources/Vorssaint/Services/Recorder/RecorderPresetImageStore.swift \
         Sources/Vorssaint/Services/Recorder/RecorderMotion.swift \
         Sources/Vorssaint/Services/Recorder/RecorderPointerTrack.swift \
         Sources/Vorssaint/Services/Recorder/RecorderTypingTrack.swift \
@@ -428,6 +429,7 @@ if (( TEST )); then
         Sources/Vorssaint/Services/ManagedDownloads/WhatsAppDownloadSupport.swift \
         Tests/MetricsTests.swift \
         Tests/RecentCaptureStoreTests.swift \
+        Tests/RecorderPresetImageStoreTests.swift \
         Tests/SpeedTestTests.swift \
         Tests/SettingsWindowTests.swift \
         -o build/metrics-tests
