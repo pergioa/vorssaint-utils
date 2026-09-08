@@ -80,14 +80,18 @@ enum MetricFormat {
     /// components can under-report the total by roughly a gigabyte.
     ///
     /// `freePages` already includes speculative pages in HOST_VM_INFO64. Cached
-    /// files comprise both file-backed and purgeable pages.
+    /// files comprise both file-backed and purgeable pages. Newer tagged-memory
+    /// hardware reports its separately reserved free pages in the rev3 field.
     static func memoryUsed(totalBytes: UInt64,
                            pageSize: UInt64,
                            freePages: UInt64,
+                           freeTagStoragePages: UInt64,
                            purgeablePages: UInt64,
                            fileBackedPages: UInt64) -> UInt64 {
         guard totalBytes > 0, pageSize > 0 else { return 0 }
-        let freeAndPurgeable = freePages.addingReportingOverflow(purgeablePages)
+        let allFree = freePages.addingReportingOverflow(freeTagStoragePages)
+        guard !allFree.overflow else { return 0 }
+        let freeAndPurgeable = allFree.partialValue.addingReportingOverflow(purgeablePages)
         guard !freeAndPurgeable.overflow else { return 0 }
         let reclaimablePages = freeAndPurgeable.partialValue.addingReportingOverflow(fileBackedPages)
         guard !reclaimablePages.overflow else { return 0 }

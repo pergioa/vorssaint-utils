@@ -2033,6 +2033,7 @@ struct MetricsTests {
         let accountedUsed = MetricFormat.memoryUsed(totalBytes: 16 * 1024,
                                                     pageSize: 1024,
                                                     freePages: 1,
+                                                    freeTagStoragePages: 0,
                                                     purgeablePages: 2,
                                                     fileBackedPages: 3)
         expect(accountedUsed == 10 * 1024,
@@ -2040,16 +2041,27 @@ struct MetricsTests {
         let reservedUsed = MetricFormat.memoryUsed(totalBytes: 17 * 1024,
                                                    pageSize: 1024,
                                                    freePages: 1,
+                                                   freeTagStoragePages: 0,
                                                    purgeablePages: 2,
                                                    fileBackedPages: 3)
         expect(reservedUsed == accountedUsed + 1024,
                "memory used derives a model-specific reserved region instead of hardcoding one")
+        let taggedUsed = MetricFormat.memoryUsed(totalBytes: 18 * 1024,
+                                                 pageSize: 1024,
+                                                 freePages: 1,
+                                                 freeTagStoragePages: 1,
+                                                 purgeablePages: 2,
+                                                 fileBackedPages: 3)
+        expect(taggedUsed == accountedUsed + 1024,
+               "memory used excludes free storage while counting an occupied tagged-memory region")
         expect(MetricFormat.memoryUsed(totalBytes: 16, pageSize: 1,
-                                       freePages: 20, purgeablePages: 0,
+                                       freePages: 20, freeTagStoragePages: 0,
+                                       purgeablePages: 0,
                                        fileBackedPages: 0) == 0,
                "memory used clamps impossible reclaimable memory")
         expect(MetricFormat.memoryUsed(totalBytes: 16, pageSize: 1,
-                                       freePages: UInt64.max, purgeablePages: 1,
+                                       freePages: UInt64.max, freeTagStoragePages: 1,
+                                       purgeablePages: 0,
                                        fileBackedPages: 0) == 0,
                "memory used rejects overflowing kernel counters")
 
@@ -2060,6 +2072,7 @@ struct MetricsTests {
         vmStats.compressor_page_count = 4
         vmStats.external_page_count = 5
         vmStats.internal_page_count = 6
+        vmStats.free_tag_storage_pages = 7
         expect(VMStatisticsDecoder.decode(vmStats,
                                           returnedCount: VMStatisticsDecoder.rev1Count - 1) == nil,
                "VM statistics rejects a truncated legacy payload")
@@ -2070,8 +2083,12 @@ struct MetricsTests {
                                         purgeablePages: 3,
                                         compressorPages: 4,
                                         externalPages: 5,
-                                        internalPages: 6),
+                                        internalPages: 6,
+                                        freeTagStoragePages: 0),
                "VM statistics decodes the typed legacy prefix")
+        expect(VMStatisticsDecoder.decode(vmStats,
+                                          returnedCount: VMStatisticsDecoder.rev3Count)?.freeTagStoragePages == 7,
+               "VM statistics decodes free tag storage only from a rev3 payload")
 
         // MARK: App memory
 

@@ -59,6 +59,7 @@ enum SystemInfo {
         let used = MetricFormat.memoryUsed(totalBytes: total,
                                            pageSize: pageSize,
                                            freePages: stats.freePages,
+                                           freeTagStoragePages: stats.freeTagStoragePages,
                                            purgeablePages: stats.purgeablePages,
                                            fileBackedPages: stats.externalPages)
         let compressed = MetricFormat.compressedMemory(totalBytes: total,
