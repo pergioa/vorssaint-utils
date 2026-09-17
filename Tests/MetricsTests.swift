@@ -18,7 +18,10 @@ struct MetricsTests {
     static func main() {
         let suite = TestSuite()
         let groups: [(String, () -> Void)] = [
-            ("harness", { TestHarnessTests.run(suite) }),
+            ("harness", {
+                TestHarnessTests.run(suite)
+                PreferenceNamespaceTests.run(suite)
+            }),
             ("core", { coreChecks(suite) }),
             ("capture", { ScreenshotSelectionRefreshContract.run(suite) }),
             ("keyboard", {
