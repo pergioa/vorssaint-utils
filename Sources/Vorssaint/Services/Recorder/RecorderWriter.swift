@@ -26,6 +26,7 @@ final class RecorderWriter {
     private let systemAudioInput: AVAssetWriterInput?
     private let microphoneInput: AVAssetWriterInput?
     private let pauseClock: RecorderPauseClock
+    private let readinessOverride: ((RecorderCaptureEngine.Kind) -> Bool)?
     private var systemAudioConverter: AVAudioConverter?
     private var microphoneConverter: AVAudioConverter?
 
@@ -45,7 +46,8 @@ final class RecorderWriter {
           frameRate: Int,
           capturesSystemAudio: Bool,
           capturesMicrophone: Bool,
-          pauseClock: RecorderPauseClock) {
+          pauseClock: RecorderPauseClock,
+          readinessOverride: ((RecorderCaptureEngine.Kind) -> Bool)? = nil) {
         guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mov) else { return nil }
         // A recording that outlives a crash is worth the few extra bytes a
         // fragmented file costs.
@@ -99,6 +101,7 @@ final class RecorderWriter {
         self.systemAudioInput = systemAudioInput
         self.microphoneInput = microphoneInput
         self.pauseClock = pauseClock
+        self.readinessOverride = readinessOverride
     }
 
     // MARK: - Settings
@@ -174,7 +177,8 @@ final class RecorderWriter {
             // Hold the first captured image over startup latency. Keep the
             // shared origin and every later timestamp so audio stays aligned.
             let videoTime: CMTime = videoFrameCount == 0 ? .zero : shifted
-            guard videoInput.isReadyForMoreMediaData else { return .notReady }
+            guard readinessOverride?(kind) != false,
+                  videoInput.isReadyForMoreMediaData else { return .notReady }
             guard let retimed = RecorderSampleTiming.retimed(sampleBuffer, to: videoTime)
             else { return .dropped }
             if videoInput.append(retimed) {
@@ -188,7 +192,8 @@ final class RecorderWriter {
             }
         case .systemAudio:
             guard let systemAudioInput else { return .dropped }
-            guard systemAudioInput.isReadyForMoreMediaData else { return .notReady }
+            guard readinessOverride?(kind) != false,
+                  systemAudioInput.isReadyForMoreMediaData else { return .notReady }
             guard
                   let interleaved = Self.interleavedAudioSample(sampleBuffer, converter: &systemAudioConverter),
                   let retimed = RecorderSampleTiming.retimed(interleaved, to: shifted)
@@ -200,7 +205,8 @@ final class RecorderWriter {
             return .appended
         case .microphone:
             guard let microphoneInput else { return .dropped }
-            guard microphoneInput.isReadyForMoreMediaData else { return .notReady }
+            guard readinessOverride?(kind) != false,
+                  microphoneInput.isReadyForMoreMediaData else { return .notReady }
             guard
                   let interleaved = Self.interleavedAudioSample(sampleBuffer, converter: &microphoneConverter),
                   let retimed = RecorderSampleTiming.retimed(interleaved, to: shifted)
@@ -215,6 +221,7 @@ final class RecorderWriter {
 
     func isReadyForMoreMediaData(_ kind: RecorderCaptureEngine.Kind) -> Bool {
         guard started, !failed else { return false }
+        guard readinessOverride?(kind) != false else { return false }
         switch kind {
         case .video: return videoInput.isReadyForMoreMediaData
         case .systemAudio: return systemAudioInput?.isReadyForMoreMediaData ?? false

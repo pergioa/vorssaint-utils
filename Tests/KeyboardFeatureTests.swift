@@ -132,7 +132,8 @@ enum KeyboardFeatureTests {
             ]
             coldCacheDone.signal()
         }.start()
-        coldCacheDone.wait()
+        suite.expect(coldCacheDone.wait(timeout: .now() + 5) == .success,
+                     "cold keyboard-label lookup finishes inside its bounded deadline")
         expectEqual(coldCacheCaps.first ?? "", "⌃⌥⌘M",
                     "a cold cache off the main thread falls back to ANSI M")
         expectEqual(coldCacheCaps.last ?? "", "⌃⌥⌘ ;",

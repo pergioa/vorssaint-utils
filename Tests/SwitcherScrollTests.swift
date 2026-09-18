@@ -92,12 +92,15 @@ enum SwitcherScrollContract {
             window.contentView = hosting
             defer { window.close() }
             func settle(until condition: () -> Bool = { true }) {
-                var drainedMainQueue = false
-                DispatchQueue.main.async { drainedMainQueue = true }
+                var drainGeneration = 0
+                DispatchQueue.main.async {
+                    drainGeneration = 1
+                    DispatchQueue.main.async { drainGeneration = 2 }
+                }
                 let deadline = Date().addingTimeInterval(0.5)
                 repeat {
                     hosting.layoutSubtreeIfNeeded()
-                    if drainedMainQueue && condition() { return }
+                    if drainGeneration == 2 && condition() { return }
                     RunLoop.current.run(mode: .default,
                                         before: min(deadline, Date().addingTimeInterval(0.001)))
                 } while Date() < deadline

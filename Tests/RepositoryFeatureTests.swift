@@ -37,6 +37,7 @@ enum RepositoryFeatureTests {
         let swiftSources: [String: String]
         let swiftLines: [String: [String]]
         let enumerationError: String?
+        let readTimedOut: Bool
         let unreadablePaths: [String]
         let emptyPaths: [String]
 
@@ -58,8 +59,11 @@ enum RepositoryFeatureTests {
             queue.name = "RepositorySnapshot.SourceReads"
             queue.qualityOfService = .userInitiated
             queue.maxConcurrentOperationCount = max(1, workerCount)
-            let operations = (0..<workerCount).map { workerIndex in
-                BlockOperation {
+            let readGroup = DispatchGroup()
+            let operations: [Operation] = (0..<workerCount).map { workerIndex in
+                readGroup.enter()
+                return BlockOperation {
+                    defer { readGroup.leave() }
                     var batch: [SourceRead] = []
                     batch.reserveCapacity((paths.count + workerCount - 1) / workerCount)
                     for index in stride(from: workerIndex, to: paths.count, by: workerCount) {
@@ -77,7 +81,9 @@ enum RepositoryFeatureTests {
                     collector.append(contentsOf: batch)
                 }
             }
-            queue.addOperations(operations, waitUntilFinished: true)
+            queue.addOperations(operations, waitUntilFinished: false)
+            let timedOut = readGroup.wait(timeout: .now() + 15) == .timedOut
+            if timedOut { queue.cancelAllOperations() }
 
             let reads = collector.sortedReads()
             let sources = Dictionary(uniqueKeysWithValues: reads.compactMap { read in
@@ -91,6 +97,7 @@ enum RepositoryFeatureTests {
             swiftSources = sources
             swiftLines = lines
             enumerationError = traversalError
+            readTimedOut = timedOut
             unreadablePaths = reads.compactMap { read in
                 read.error.map { "\(read.path): \($0)" }
             }
@@ -121,6 +128,8 @@ enum RepositoryFeatureTests {
                "the Swift source corpus is enumerable: \(repository.enumerationError ?? "")")
         suite.expect(!repository.swiftPaths.isEmpty,
                "the Swift source corpus contains files")
+        suite.expect(!repository.readTimedOut,
+               "the Swift source corpus finishes reading inside its bounded deadline")
         suite.expect(repository.unreadablePaths.isEmpty,
                "every Swift source is readable: \(repository.unreadablePaths)")
         suite.expect(repository.emptyPaths.isEmpty,

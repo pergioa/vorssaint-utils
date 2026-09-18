@@ -9,7 +9,7 @@ enum RecorderWriterTests {
         let finished = DispatchSemaphore(value: 0)
         Task.detached {
             do {
-                try await check(suite)
+                try await check(suite, forcesBackpressure: true)
                 try await check(suite, delayedVideo: true)
                 try await check(suite, delayedVideo: true, capturesAudio: false)
                 try await check(suite, changingMicrophone: true)
@@ -46,14 +46,21 @@ enum RecorderWriterTests {
                               delayedVideo: Bool = false, capturesAudio: Bool = true,
                               changingMicrophone: Bool = false,
                               microphoneChannels: AVAudioChannelCount = 2,
-                              changingSystemAudio: Bool = false) async throws {
+                              changingSystemAudio: Bool = false,
+                              forcesBackpressure: Bool = false) async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-sync-\(UUID()).mov")
         defer { try? FileManager.default.removeItem(at: url) }
         let pause = RecorderPauseClock()
         let origin = CMTime(value: 100, timescale: 1)
         let microphoneClock = RecorderSampleTimingTests.offsetClock()
+        var forcedBackpressure = false
         let writer = RecorderWriter(url: url, pixelSize: CGSize(width: 64, height: 64), frameRate: 30,
-            capturesSystemAudio: capturesAudio, capturesMicrophone: capturesAudio, pauseClock: pause)!
+            capturesSystemAudio: capturesAudio, capturesMicrophone: capturesAudio, pauseClock: pause,
+            readinessOverride: forcesBackpressure ? { kind in
+                guard kind == .video, !forcedBackpressure else { return true }
+                forcedBackpressure = true
+                return false
+            } : nil)!
         precondition(writer.start())
         writer.beginSession(at: origin)
         var pointer = RecorderPointerTrack()
@@ -104,6 +111,10 @@ enum RecorderWriterTests {
                     from: microphoneClock, to: CMClockGetHostTimeClock())!
                 try await feed(converted, kind: .microphone, to: writer, required: capturesAudio)
             }
+        }
+        if forcesBackpressure {
+            suite.expect(forcedBackpressure,
+                         "recorder writer fixtures exercise readiness-driven video backpressure")
         }
         try await waitUntilReady(writer, kind: .video)
         let finished = await writer.finish(at: origin + time(1.5))

@@ -210,13 +210,18 @@ enum NetworkFeatureTests {
         // number, so the blocks ramp until a probe submitted to the pool times
         // out. A fixed count leaves this check passing without ever reaching
         // the starvation it needs on a Mac whose ceiling is higher.
+        let blockedWorkerGroup = DispatchGroup()
         var blockedWorkers = 0
         var poolIsStarved = false
         var starvedProbe: DispatchSemaphore?
         while !poolIsStarved && blockedWorkers < 256 {
             for _ in 0..<32 {
                 blockedWorkers += 1
-                DispatchQueue.global(qos: .utility).async { poolGate.wait() }
+                blockedWorkerGroup.enter()
+                DispatchQueue.global(qos: .utility).async {
+                    poolGate.wait()
+                    blockedWorkerGroup.leave()
+                }
             }
             let probe = DispatchSemaphore(value: 0)
             DispatchQueue.global(qos: .utility).async { probe.signal() }
@@ -231,6 +236,8 @@ enum NetworkFeatureTests {
         // of this file never runs against workers parked on the gate.
         for _ in 0..<blockedWorkers { poolGate.signal() }
         _ = starvedProbe?.wait(timeout: .now() + 5)
+        suite.expect(blockedWorkerGroup.wait(timeout: .now() + 5) == .success,
+                     "every dispatch-pool blocker exits before the network suite continues")
         suite.expect(poolIsStarved,
                "the dispatch pool starvation this check needs was actually reached")
         suite.expect(!starvedPoolProcess.timedOut && starvedPoolProcess.status == 0

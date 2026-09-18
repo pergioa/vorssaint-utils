@@ -839,20 +839,17 @@ enum UpdateFeatureTests {
             quotedArgv: ["/bin/sh", detachPayload.path, detachLedger.path]
                 .map(UpdateInstallerSupport.shellSingleQuoted)
                 .joined(separator: " "))
-        let detachShell = Process()
-        detachShell.executableURL = URL(fileURLWithPath: "/bin/sh")
-        detachShell.arguments = ["-c", detachCommand]
-        try? detachShell.run()
-        detachShell.waitUntilExit()
+        let foregroundDetachCommand = String(detachCommand.dropLast(2))
+        let detachResult = BoundedProcessRunner.run(
+            "/bin/sh", ["-c", foregroundDetachCommand], timeout: 2, maxOutputBytes: 1_024)
+        suite.expect(!detachResult.timedOut && detachResult.status == 1,
+                     "the foreground form of the detached command observes its payload exit")
         func detachedRunCount() -> Int {
             (try? String(contentsOf: detachLedger, encoding: .utf8))?
                 .split(separator: "\n").count ?? 0
         }
-        for _ in 0..<300 where detachedRunCount() == 0 { usleep(10_000) }
         suite.expect(detachedRunCount() == 1, "a detached command starts its payload once")
-        // The rerun is counted again at the very end of this suite instead of
-        // after a fixed wait here: a second run arriving late must not read as
-        // a pass.
+        try? FileManager.default.removeItem(at: detachRoot)
 
         // A detached spawn is only detached if the child really is its own
         // session leader; `nohup` alone leaves it in ours.
@@ -1005,6 +1002,7 @@ enum UpdateFeatureTests {
         testDefaults.removePersistentDomain(forName: "com.vorssaint.tests.betaActivation")
 
         // Localization completeness & formatting
+        let originalLanguage = L10n.shared.language
         for language in AppLanguage.allCases {
             L10n.shared.language = language
             let s = L10n.shared.s
@@ -1013,7 +1011,7 @@ enum UpdateFeatureTests {
             suite.expect(!s.betaBadgeLabel.isEmpty, "\(language.rawValue) betaBadgeLabel non-empty")
             suite.expect(!s.includeBetaUpdatesCaption.contains("—"), "\(language.rawValue) has no em dash")
         }
-        L10n.shared.language = .enUS
+        L10n.shared.language = originalLanguage
 
         // MARK: Launch at login reconciliation
 
@@ -1810,14 +1808,5 @@ enum UpdateFeatureTests {
                 .contains(.appUpdates),
                "with the schedule off, app updates need no notification permission")
 
-        // MARK: Detached command reruns (counted last, so a late rerun still fails)
-        // The `||` form reran the whole installer — as root — on every non-zero
-        // payload exit. Counting here rather than after a fixed wait leaves the
-        // check no window a second run can arrive behind.
-        let detachedRuns = detachedRunCount()
-        suite.expect(detachedRuns == 1,
-               "a detached command runs its payload once whatever the payload exits with "
-               + "(ran \(detachedRuns) time(s))")
-        try? FileManager.default.removeItem(at: detachRoot)
     }
 }

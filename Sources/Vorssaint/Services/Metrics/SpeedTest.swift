@@ -14,7 +14,7 @@ import Foundation
 final class SpeedTest: NSObject, ObservableObject {
     static let shared = SpeedTest()
 
-    typealias Clock = () -> CFAbsoluteTime
+    typealias Clock = () -> TimeInterval
     typealias TimeBoxScheduler = (OperationQueue, TimeInterval, @escaping () -> Void) -> () -> Void
 
     enum Phase: Equatable {
@@ -48,13 +48,13 @@ final class SpeedTest: NSObject, ObservableObject {
     private var task: URLSessionTask?
     private var kind: Kind = .none           // touched only on `queue`
     private var transferred: Int64 = 0       // touched only on `queue`
-    private var startedAt: CFAbsoluteTime = 0
+    private var startedAt: TimeInterval = 0
     private var finished = false
     private var generation = 0
     private var cancelTimeBox: (() -> Void)?
 
     init(configuration: URLSessionConfiguration = .ephemeral, sampleSeconds: TimeInterval = 5,
-         clock: @escaping Clock = { CFAbsoluteTimeGetCurrent() },
+         clock: @escaping Clock = { ProcessInfo.processInfo.systemUptime },
          scheduleTimeBox: @escaping TimeBoxScheduler = { queue, delay, action in
              let work = DispatchWorkItem { queue.addOperation(action) }
              DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: work)

@@ -73,10 +73,10 @@ enum SpeedTestTests {
                 suite.expect(scheduler.count > 0 && scheduler.allCancelled,
                        "speed test \(testCase.name) cancels every scheduled transfer time box")
             }
-            scheduler.runEveryCallback()
+            let callbacksCompleted = scheduler.runEveryCallback()
             drainMainQueue()
-            suite.expect(test.phase == phase && test.latencyMs == latencyMs
-                         && test.downloadMbps == downloadMbps && test.uploadMbps == uploadMbps,
+            suite.expect(callbacksCompleted && test.phase == phase && test.latencyMs == latencyMs
+                          && test.downloadMbps == downloadMbps && test.uploadMbps == uploadMbps,
                    "speed test \(testCase.name) stays terminal after stale time-box callbacks")
             suite.expect(SpeedTestProtocol.requests(for: testCase.name) == testCase.requests,
                    "speed test \(testCase.name) stops requesting data at the failed phase")
@@ -149,19 +149,26 @@ private final class SpeedTestTimeBoxScheduler {
             return callbacks[index]
         }
         guard let callback else { return false }
-        run(callback)
-        return true
+        return run(callback)
     }
 
-    func runEveryCallback() {
+    func runEveryCallback() -> Bool {
         let pending = lock.withLock { callbacks }
-        pending.forEach(run)
+        var completed = true
+        for callback in pending {
+            completed = run(callback) && completed
+        }
+        return completed
     }
 
-    private func run(_ callback: Callback) {
+    private func run(_ callback: Callback) -> Bool {
         clock.advance(by: callback.delay)
-        callback.queue.addOperation(callback.action)
-        callback.queue.waitUntilAllOperationsAreFinished()
+        let completed = DispatchSemaphore(value: 0)
+        callback.queue.addOperation {
+            callback.action()
+            completed.signal()
+        }
+        return completed.wait(timeout: .now() + 1) == .success
     }
 }
 
