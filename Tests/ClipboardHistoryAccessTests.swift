@@ -4,33 +4,33 @@
 import Foundation
 
 struct ClipboardHistoryAccessTests {
-    static func run(expect: (Bool, String) -> Void) {
+    static func run(_ suite: TestSuite) {
         precondition(Thread.isMainThread)
 
         // A deadline rejects the result immediately but cannot free admission
         // for another capture until the actual read leaves the queue.
         var capture = ClipboardHistoryCaptureState()
         let first = capture.begin()!
-        expect(capture.needsBaseline, "first capture establishes a baseline")
+        suite.expect(capture.needsBaseline, "first capture establishes a baseline")
         capture.expire(first)
-        expect(!capture.accepts(first), "expired capture is rejected before another tick")
+        suite.expect(!capture.accepts(first), "expired capture is rejected before another tick")
         for _ in 0..<100 {
-            expect(capture.begin() == nil, "expired read still occupies capture admission")
+            suite.expect(capture.begin() == nil, "expired read still occupies capture admission")
         }
         capture.invalidate() // stop
         capture.restart() // start while the old read is still blocked
-        expect(capture.begin() == nil, "stop/start cannot queue a second blocked read")
-        expect(!capture.accepts(first), "restart rejects the previous run's result")
+        suite.expect(capture.begin() == nil, "stop/start cannot queue a second blocked read")
+        suite.expect(!capture.accepts(first), "restart rejects the previous run's result")
         capture.finish()
         let baseline = capture.begin()!
-        expect(capture.needsBaseline && capture.accepts(baseline),
+        suite.expect(capture.needsBaseline && capture.accepts(baseline),
                "new run establishes its own baseline after old read finishes")
         capture.didBaseline()
         capture.finish()
         let fresh = capture.begin()!
         capture.expire(first)
-        expect(capture.accepts(fresh), "old timeout cannot invalidate a newer capture")
-        expect(!capture.needsBaseline, "normal captures follow the accepted baseline")
+        suite.expect(capture.accepts(fresh), "old timeout cannot invalidate a newer capture")
+        suite.expect(!capture.needsBaseline, "normal captures follow the accepted baseline")
         capture.finish()
 
         let lane = GeneralPasteboardAccess(label: "Vorssaint.Tests.ClipboardDeadline")
@@ -53,15 +53,15 @@ struct ClipboardHistoryAccessTests {
             finishedValue = value
             finishes += 1
         })
-        expect(entered.wait(timeout: .now() + 1) == .success, "read starts on lane")
+        suite.expect(entered.wait(timeout: .now() + 1) == .success, "read starts on lane")
         pump { completions == 1 }
-        expect(answer == nil && answerOnMain, "timeout returns nil on main")
-        expect(finishes == 0, "timeout does not pretend the blocked operation finished")
+        suite.expect(answer == nil && answerOnMain, "timeout returns nil on main")
+        suite.expect(finishes == 0, "timeout does not pretend the blocked operation finished")
         release.signal()
         pump { finishes == 1 }
-        expect(finishes == 1 && completions == 1 && answer == nil,
+        suite.expect(finishes == 1 && completions == 1 && answer == nil,
                "late completion releases admission without delivering stale success")
-        expect(finishedValue == 42,
+        suite.expect(finishedValue == 42,
                "expired result retains bookkeeping for the actual operation completion")
 
         // A queued user action must expire without ever running its write.
@@ -71,7 +71,7 @@ struct ClipboardHistoryAccessTests {
             queueEntered.signal()
             _ = releaseQueue.wait(timeout: .now() + 2)
         }
-        expect(queueEntered.wait(timeout: .now() + 1) == .success, "lane is held before copy")
+        suite.expect(queueEntered.wait(timeout: .now() + 1) == .success, "lane is held before copy")
         let writes = Counter()
         var copyCompletions = 0
         var copyFinishes = 0
@@ -84,11 +84,11 @@ struct ClipboardHistoryAccessTests {
             copyCompletions += 1
         }, didFinish: { _ in copyFinishes += 1 })
         pump { copyCompletions == 1 }
-        expect(copyAnswer == nil && writes.value == 0 && copyFinishes == 0,
+        suite.expect(copyAnswer == nil && writes.value == 0 && copyFinishes == 0,
                "queued copy expires without writing or freeing its occupied slot")
         releaseQueue.signal()
         pump { copyFinishes == 1 }
-        expect(copyFinishes == 1 && copyCompletions == 1 && writes.value == 0,
+        suite.expect(copyFinishes == 1 && copyCompletions == 1 && writes.value == 0,
                "expired queued copy never writes after the lane recovers")
 
         var freshAnswer: Bool?
@@ -101,7 +101,7 @@ struct ClipboardHistoryAccessTests {
         pump { freshCompletions == 1 }
         // Exercise the canceled deadline as well as the successful delivery.
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.55))
-        expect(freshAnswer == false && freshCompletions == 1 && freshFinishes == 1,
+        suite.expect(freshAnswer == false && freshCompletions == 1 && freshFinishes == 1,
                "write failure is preserved and delivered once before the deadline")
 
         // Main may be busy past the deadline. Even if the worker finished,
@@ -116,10 +116,10 @@ struct ClipboardHistoryAccessTests {
             overdueAnswer = value
             overdueCompletions += 1
         })
-        expect(workReturned.wait(timeout: .now() + 1) == .success, "worker finishes before delivery")
+        suite.expect(workReturned.wait(timeout: .now() + 1) == .success, "worker finishes before delivery")
         Thread.sleep(forTimeInterval: 0.06)
         pump { overdueCompletions == 1 }
-        expect(overdueAnswer == nil && overdueCompletions == 1,
+        suite.expect(overdueAnswer == nil && overdueCompletions == 1,
                "result queued on main cannot succeed after its deadline")
     }
 

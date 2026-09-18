@@ -4,7 +4,7 @@
 import Foundation
 
 enum SpeedTestTests {
-    static func run(expect: (Bool, String) -> Void) {
+    static func run(_ suite: TestSuite) {
         let cases: [(name: String, requests: [String])] = [
             ("latency-500", ["latency"]),
             ("latency-non-http", ["latency"]),
@@ -28,27 +28,27 @@ enum SpeedTestTests {
                 default: break
                 }
             } while !completed && Date() < deadline
-            expect(completed, "speed test \(testCase.name) reaches a terminal state")
+            suite.expect(completed, "speed test \(testCase.name) reaches a terminal state")
 
             let succeeded = testCase.name == "success-204"
             if succeeded {
-                expect(test.phase == .done && test.latencyMs != nil
+                suite.expect(test.phase == .done && test.latencyMs != nil
                         && (test.downloadMbps ?? 0) > 0 && test.uploadMbps != nil,
                        "successful HTTP responses complete every speed test phase")
             } else {
                 if case .failed = test.phase {
-                    expect(true, "speed test \(testCase.name) reports a failure")
+                    suite.expect(true, "speed test \(testCase.name) reports a failure")
                 } else {
-                    expect(false, "speed test \(testCase.name) reports a failure")
+                    suite.expect(false, "speed test \(testCase.name) reports a failure")
                 }
-                expect(test.uploadMbps == nil,
+                suite.expect(test.uploadMbps == nil,
                        "speed test \(testCase.name) never publishes an upload result after rejection")
                 if testCase.name != "upload-503" {
-                    expect(test.downloadMbps == nil,
+                    suite.expect(test.downloadMbps == nil,
                            "speed test \(testCase.name) never counts an error body as download traffic")
                 }
                 if testCase.name.hasPrefix("latency-") {
-                    expect(test.latencyMs == nil,
+                    suite.expect(test.latencyMs == nil,
                            "speed test \(testCase.name) never measures an invalid latency response")
                 }
             }
@@ -59,8 +59,8 @@ enum SpeedTestTests {
             while Date() < settled {
                 RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
             }
-            expect(test.phase == phase, "speed test \(testCase.name) stays terminal after its time box")
-            expect(SpeedTestProtocol.requests(for: testCase.name) == testCase.requests,
+            suite.expect(test.phase == phase, "speed test \(testCase.name) stays terminal after its time box")
+            suite.expect(SpeedTestProtocol.requests(for: testCase.name) == testCase.requests,
                    "speed test \(testCase.name) stops requesting data at the failed phase")
             test.cancel()
         }
