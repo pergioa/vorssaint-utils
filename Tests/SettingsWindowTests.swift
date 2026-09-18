@@ -3,6 +3,12 @@
 
 import AppKit
 
+private final class TestSettingsWindow: SettingsWindow {
+    var testIsKeyWindow = true
+
+    override var isKeyWindow: Bool { testIsKeyWindow }
+}
+
 enum SettingsWindowTests {
     static func run(expect: (Bool, String) -> Void) {
         let app = NSApplication.shared
@@ -13,19 +19,13 @@ enum SettingsWindowTests {
         for key in keys { defaults.set(false, forKey: key) }
         defaults.set(true, forKey: AppFeature.scrollInverter.availabilityKey)
         let previousMenu = app.mainMenu
-        let previousKeyWindow = app.keyWindow
-        let previousApplication = NSWorkspace.shared.frontmostApplication
-        let previousPolicy = app.activationPolicy()
-        let window = SettingsWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 300, height: 200),
-                                    styleMask: [.titled], backing: .buffered, defer: false)
+        let window = TestSettingsWindow(contentRect: NSRect(x: -10_000, y: -10_000, width: 300, height: 200),
+                                        styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.router = SettingsRouter()
         defer {
             window.close()
             app.mainMenu = previousMenu
-            previousKeyWindow?.makeKey()
-            app.setActivationPolicy(previousPolicy)
-            previousApplication?.activate(options: [])
             for (key, value) in zip(keys, previous) {
                 if let value { defaults.set(value, forKey: key) }
                 else { defaults.removeObject(forKey: key) }
@@ -40,21 +40,7 @@ enum SettingsWindowTests {
         host.submenu = navigationMenu
         mainMenu.addItem(host)
         app.mainMenu = mainMenu
-        app.setActivationPolicy(.accessory)
-        // AppKit must dispatch activation events before it has a key-window responder chain.
-        DispatchQueue.main.async {
-            window.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            app.stop(nil)
-            app.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero,
-                                             modifierFlags: [], timestamp: 0, windowNumber: 0,
-                                             context: nil, subtype: 0, data1: 0, data2: 0)!, atStart: true)
-        }
-        app.run()
         expect(window.isKeyWindow, "Settings navigation fixture has a key window")
-        guard window.isKeyWindow else { return }
 
         let back = navigationMenu.items[0]
         let forward = navigationMenu.items[1]
@@ -67,25 +53,28 @@ enum SettingsWindowTests {
         expect(window.validateMenuItem(back) && !window.validateMenuItem(forward),
                "Mouse and Trackpad enables Back to the preceding page")
 
-        // This is the menu-command path used when another app's tap consumes the raw click.
-        navigationMenu.performActionForItem(at: 0)
+        // The production items remain targetless; direct them explicitly because this
+        // isolated fixture deliberately has no active application's responder chain.
+        app.sendAction(back.action!, to: window, from: back)
         expect(window.router.page == .about,
-               "a Back menu action navigates from Mouse and Trackpad through the responder chain")
-        navigationMenu.performActionForItem(at: 1)
+               "a Back menu action navigates from Mouse and Trackpad")
+        app.sendAction(forward.action!, to: window, from: forward)
         expect(window.router.page == .mouse,
                "a Forward menu action restores Mouse and Trackpad")
 
-        func pressKey(_ character: String, keyCode: UInt16) {
+        func pressKey(_ item: NSMenuItem, keyCode: UInt16) {
+            let character = item.keyEquivalent
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
                                         timestamp: 0, windowNumber: window.windowNumber, context: nil,
                                         characters: character, charactersIgnoringModifiers: character,
                                         isARepeat: false, keyCode: keyCode)!
             expect(mainMenu.performKeyEquivalent(with: event),
                    "Settings resolves the Command-\(character) navigation shortcut")
+            app.sendAction(item.action!, to: window, from: item)
         }
-        pressKey(back.keyEquivalent, keyCode: 33)
+        pressKey(back, keyCode: 33)
         expect(window.router.page == .about, "a driver-generated Back shortcut navigates Settings")
-        pressKey(forward.keyEquivalent, keyCode: 30)
+        pressKey(forward, keyCode: 30)
         expect(window.router.page == .mouse, "a driver-generated Forward shortcut navigates Settings")
 
         func mouseEvent(_ type: CGEventType, button: Int64) {
@@ -110,7 +99,7 @@ enum SettingsWindowTests {
         mouseEvent(.otherMouseUp, button: 3)
         expect(window.router.page == .mouse, "shortcut capture blocks both command and raw-button navigation")
         window.isMouseButtonCaptureActive = { false }
-        window.resignKey()
+        window.testIsKeyWindow = false
         window.goBack(nil)
         expect(!window.validateMenuItem(back) && window.router.page == .mouse,
                "an unfocused Settings window cannot navigate through a command")

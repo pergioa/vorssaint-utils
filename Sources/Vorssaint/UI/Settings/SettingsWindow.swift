@@ -4,7 +4,7 @@
 import AppKit
 
 /// Handles side buttons before the hosted SwiftUI controls can consume them.
-final class SettingsWindow: NSWindow {
+class SettingsWindow: NSWindow {
     var router = SettingsRouter.shared
     // The app supplies capture state without making the window own a global input service.
     var isMouseButtonCaptureActive: () -> Bool = { false }
