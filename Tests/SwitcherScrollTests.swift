@@ -91,18 +91,43 @@ enum SwitcherScrollContract {
             window.isReleasedWhenClosed = false
             window.contentView = hosting
             defer { window.close() }
-            func settle() {
-                for _ in 0..<25 {
+            func settle(until condition: () -> Bool = { true }) {
+                var drainedMainQueue = false
+                DispatchQueue.main.async { drainedMainQueue = true }
+                let deadline = Date().addingTimeInterval(0.5)
+                repeat {
                     hosting.layoutSubtreeIfNeeded()
-                    RunLoop.current.run(until: Date().addingTimeInterval(0.012))
-                }
+                    if drainedMainQueue && condition() { return }
+                    RunLoop.current.run(mode: .default,
+                                        before: min(deadline, Date().addingTimeInterval(0.001)))
+                } while Date() < deadline
+                hosting.layoutSubtreeIfNeeded()
             }
             func findScroll(_ view: NSView) -> NSScrollView? {
                 if let scroll = view as? NSScrollView { return scroll }
                 return view.subviews.compactMap { findScroll($0) }.first
             }
             func check(_ step: String) {
-                settle()
+                settle {
+                    guard let scroll = findScroll(hosting),
+                          model.windows.indices.contains(model.selectedIndex) else { return false }
+                    let selected = model.windows[model.selectedIndex]
+                    let appWindows = model.windows.filter { $0.pid == selected.pid }
+                    guard let localIndex = appWindows.firstIndex(where: { $0.id == selected.id }) else {
+                        return false
+                    }
+                    let width = model.simple ? SwitcherIconRowLayout.simpleTitleChipMaxWidth
+                        : SwitcherIconRowLayout.previewCardWidth
+                    let spacing = model.simple ? SwitcherIconRowLayout.simpleTitleSpacing
+                        : SwitcherIconRowLayout.spacing
+                    let padding = model.simple ? SwitcherIconRowLayout.simpleTitleScrollPadding : 0
+                    let clip = scroll.contentView.bounds
+                    if !model.simple && appWindows.count == 2 && model.screenWidth >= 800 {
+                        return clip.minX <= 0.5 && clip.maxX >= width * 2 + spacing - 0.5
+                    }
+                    let start = padding + CGFloat(localIndex) * (width + spacing)
+                    return start >= clip.minX - 0.5 && start + width <= clip.maxX + 0.5
+                }
                 guard let scroll = findScroll(hosting), model.windows.indices.contains(model.selectedIndex) else {
                     suite.expect(false, "\(name)/\(step): missing scroll content")
                     return
@@ -123,7 +148,7 @@ enum SwitcherScrollContract {
                 suite.expect(start >= clip.minX - 0.5 && start + width <= clip.maxX + 0.5,
                              "\(name)/\(step): selected \(selected.id) at \(start)...\(start + width) must fit \(clip.minX)...\(clip.maxX)")
             }
-            body(model, check, settle)
+            body(model, check, { settle() })
         }
         for simple in [false, true] {
             let mode = simple ? "titles" : "previews"

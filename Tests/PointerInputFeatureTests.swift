@@ -2669,8 +2669,8 @@ enum PointerInputFeatureTests {
                 arguments[scope.defaultsKey] = ["com.example.mouse-exception-test"]
             }
             defaults.setVolatileDomain(arguments, forName: UserDefaults.argumentDomain)
-            let exceptions = MouseAppExceptions.shared
-            exceptions.reload()
+            let cacheClock = PointerInputTestClock()
+            let exceptions = MouseAppExceptions(uptime: cacheClock.read)
             defer {
                 defaults.setVolatileDomain(savedArguments, forName: UserDefaults.argumentDomain)
             }
@@ -2721,7 +2721,7 @@ enum PointerInputFeatureTests {
 
             queryWithoutMain("cold-cache")
             queryWithoutMain("changed-window")
-            Thread.sleep(forTimeInterval: MouseAppExceptionSupport.resolveLifetime)
+            cacheClock.advance(by: MouseAppExceptionSupport.resolveLifetime)
             queryWithoutMain("expired-cache")
             suite.expect(verdictWithoutMain(CGPoint(x: -20_000, y: -20_000)),
                    "an app that cannot be told apart from a listed one keeps the feature's hands off")
@@ -3184,5 +3184,18 @@ enum PointerInputFeatureTests {
         }
 
         GlobalShortcut.refreshLayoutLabels()
+    }
+}
+
+private final class PointerInputTestClock {
+    private let lock = NSLock()
+    private var value: TimeInterval = 0
+
+    func read() -> TimeInterval {
+        lock.withLock { value }
+    }
+
+    func advance(by interval: TimeInterval) {
+        lock.withLock { value += interval }
     }
 }

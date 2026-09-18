@@ -33,7 +33,13 @@ struct ClipboardHistoryAccessTests {
         suite.expect(!capture.needsBaseline, "normal captures follow the accepted baseline")
         capture.finish()
 
-        let lane = GeneralPasteboardAccess(label: "Vorssaint.Tests.ClipboardDeadline")
+        let clock = TestClock()
+        let deadlines = ManualDeadlineScheduler(clock: clock)
+        let lane = GeneralPasteboardAccess(
+            label: "Vorssaint.Tests.ClipboardDeadline",
+            now: clock.read,
+            scheduleDeadline: deadlines.schedule
+        )
         let release = DispatchSemaphore(value: 0)
         let entered = DispatchSemaphore(value: 0)
         var completions = 0
@@ -54,7 +60,7 @@ struct ClipboardHistoryAccessTests {
             finishes += 1
         })
         suite.expect(entered.wait(timeout: .now() + 1) == .success, "read starts on lane")
-        pump { completions == 1 }
+        deadlines.fireNext()
         suite.expect(answer == nil && answerOnMain, "timeout returns nil on main")
         suite.expect(finishes == 0, "timeout does not pretend the blocked operation finished")
         release.signal()
@@ -83,7 +89,7 @@ struct ClipboardHistoryAccessTests {
             copyAnswer = value
             copyCompletions += 1
         }, didFinish: { _ in copyFinishes += 1 })
-        pump { copyCompletions == 1 }
+        deadlines.fireNext()
         suite.expect(copyAnswer == nil && writes.value == 0 && copyFinishes == 0,
                "queued copy expires without writing or freeing its occupied slot")
         releaseQueue.signal()
@@ -100,7 +106,7 @@ struct ClipboardHistoryAccessTests {
         }, didFinish: { _ in freshFinishes += 1 })
         pump { freshCompletions == 1 }
         // Exercise the canceled deadline as well as the successful delivery.
-        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.55))
+        deadlines.fireNext()
         suite.expect(freshAnswer == false && freshCompletions == 1 && freshFinishes == 1,
                "write failure is preserved and delivered once before the deadline")
 
@@ -117,7 +123,7 @@ struct ClipboardHistoryAccessTests {
             overdueCompletions += 1
         })
         suite.expect(workReturned.wait(timeout: .now() + 1) == .success, "worker finishes before delivery")
-        Thread.sleep(forTimeInterval: 0.06)
+        clock.advance(by: 0.03)
         pump { overdueCompletions == 1 }
         suite.expect(overdueAnswer == nil && overdueCompletions == 1,
                "result queued on main cannot succeed after its deadline")
@@ -144,6 +150,60 @@ struct ClipboardHistoryAccessTests {
             lock.lock()
             count += 1
             lock.unlock()
+        }
+    }
+
+    private final class TestClock {
+        private let lock = NSLock()
+        private var value: TimeInterval = 0
+
+        func read() -> TimeInterval {
+            lock.withLock { value }
+        }
+
+        func advance(by interval: TimeInterval) {
+            lock.withLock { value += interval }
+        }
+
+        func advance(to time: TimeInterval) {
+            lock.withLock { value = max(value, time) }
+        }
+    }
+
+    private final class ManualDeadlineScheduler {
+        private final class Deadline {
+            let time: TimeInterval
+            let action: () -> Void
+            var canceled = false
+            var fired = false
+
+            init(time: TimeInterval, action: @escaping () -> Void) {
+                self.time = time
+                self.action = action
+            }
+        }
+
+        private let clock: TestClock
+        private var deadlines: [Deadline] = []
+
+        init(clock: TestClock) {
+            self.clock = clock
+        }
+
+        func schedule(after delay: TimeInterval,
+                      action: @escaping () -> Void) -> () -> Void {
+            let deadline = Deadline(time: clock.read() + delay, action: action)
+            deadlines.append(deadline)
+            return { deadline.canceled = true }
+        }
+
+        func fireNext() {
+            guard let deadline = deadlines.first(where: { !$0.fired }) else {
+                preconditionFailure("no test deadline is waiting")
+            }
+            deadline.fired = true
+            clock.advance(to: deadline.time)
+            if !deadline.canceled { deadline.action() }
         }
     }
 }

@@ -20,7 +20,8 @@ enum RecorderWriterTests {
             catch { suite.expect(false, "recorder writer fixture failed: \(error)") }
             finished.signal()
         }
-        finished.wait()
+        suite.expect(finished.wait(timeout: .now() + 30) == .success,
+                     "recorder writer scenarios finish within their bounded fixture deadline")
     }
 
     private static func checkClock(_ suite: TestSuite) {
@@ -64,7 +65,7 @@ enum RecorderWriterTests {
         let firstMicrophone = changingMicrophone
             ? audioSample(firstAudio, interleaved: false, channels: microphoneChannels)
             : firstAudio
-        writer.append(firstMicrophone, kind: .microphone)
+        try await feed(firstMicrophone, kind: .microphone, to: writer, required: capturesAudio)
         for index in 0..<100 {
             if index == 50 {
                 pause.pause(at: 100.5)
@@ -74,7 +75,7 @@ enum RecorderWriterTests {
             }
             let source = origin + time(Double(index) / 100 + (index >= 50 ? 0.5 : 0))
             if [delayedVideo ? 20 : 0, 40, 80].contains(index) {
-                writer.append(video(at: source), kind: .video)
+                try await feed(video(at: source), kind: .video, to: writer)
             }
             let audio = RecorderSampleTimingTests.audio(count: 480, time: source)
             if index == 40 || index == 80 {
@@ -92,7 +93,7 @@ enum RecorderWriterTests {
             let systemAudio = changingSystemAudio
                 ? audioSample(audio, interleaved: index < 50, channels: 2)
                 : audio
-            writer.append(systemAudio, kind: .systemAudio)
+            try await feed(systemAudio, kind: .systemAudio, to: writer, required: capturesAudio)
             if index > 10 {
                 let captured = changingMicrophone
                     ? audioSample(audio, interleaved: index >= 50, channels: microphoneChannels)
@@ -101,11 +102,10 @@ enum RecorderWriterTests {
                 let microphone = RecorderSampleTiming.retimed(captured, to: source + time(400))!
                 let converted = RecorderSampleTiming.converted(microphone,
                     from: microphoneClock, to: CMClockGetHostTimeClock())!
-                writer.append(converted, kind: .microphone)
+                try await feed(converted, kind: .microphone, to: writer, required: capturesAudio)
             }
-            // Real-time writer inputs apply backpressure; give the encoders time.
-            try await Task.sleep(nanoseconds: 10_000_000)
         }
+        try await waitUntilReady(writer, kind: .video)
         let finished = await writer.finish(at: origin + time(1.5))
         suite.expect(finished, changingMicrophone || changingSystemAudio
             ? "the multitrack MOV survives an audio buffer-layout change across a pause"
@@ -181,6 +181,51 @@ enum RecorderWriterTests {
 
     private static func time(_ seconds: Double) -> CMTime {
         CMTime(seconds: seconds, preferredTimescale: 48_000)
+    }
+
+    private static func feed(_ sample: CMSampleBuffer,
+                             kind: RecorderCaptureEngine.Kind,
+                             to writer: RecorderWriter,
+                             required: Bool = true) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        var attempts = 0
+        while attempts < 2_000 && ProcessInfo.processInfo.systemUptime < deadline {
+            switch writer.append(sample, kind: kind) {
+            case .appended:
+                return
+            case .dropped:
+                if required { throw FixtureError.dropped(kind) }
+                return
+            case .notReady:
+                attempts += 1
+                try await Task.sleep(nanoseconds: 1_000_000)
+            }
+        }
+        throw FixtureError.timedOut(kind)
+    }
+
+    private static func waitUntilReady(_ writer: RecorderWriter,
+                                       kind: RecorderCaptureEngine.Kind) async throws {
+        let deadline = ProcessInfo.processInfo.systemUptime + 2
+        var attempts = 0
+        while attempts < 2_000 && ProcessInfo.processInfo.systemUptime < deadline {
+            if writer.isReadyForMoreMediaData(kind) { return }
+            attempts += 1
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        throw FixtureError.timedOut(kind)
+    }
+
+    private enum FixtureError: Error, CustomStringConvertible {
+        case dropped(RecorderCaptureEngine.Kind)
+        case timedOut(RecorderCaptureEngine.Kind)
+
+        var description: String {
+            switch self {
+            case .dropped(let kind): "writer dropped required \(kind) fixture sample"
+            case .timedOut(let kind): "writer stayed backpressured for required \(kind) fixture sample"
+            }
+        }
     }
 
     /// Emulate a device switching between planar and interleaved PCM. The
