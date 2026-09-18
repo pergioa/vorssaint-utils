@@ -674,6 +674,17 @@ enum ScreenshotFeatureTests {
                 && featureRuntimeSource.components(separatedBy:
                     "RecentCaptureService.shared.syncWithPreferences()").count == 3,
                "the history shortcut opens its window and follows both capture producers")
+        let recentCapturePaletteCode = recentCaptureServiceSource
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        suite.expect(recentCapturePaletteCode.contains("panel.hidesOnDeactivate = false")
+                && !recentCapturePaletteCode.contains("hidesOnDeactivate = true")
+                && recentCapturePaletteCode.contains("NSWorkspace.didActivateApplicationNotification")
+                && !recentCapturePaletteCode.contains("NSApplication.didResignActiveNotification")
+                && recentCapturePaletteCode.contains(
+                    "NSWorkspace.shared.notificationCenter.removeObserver("),
+               "a recent captures palette appears promptly and leaves when another app activates")
         suite.expect(!ScreenshotSupport.captureAvailabilityChanged(
                     activeTools: [.screenshot, .recording],
                     availableTools: [.screenshot, .recording])
@@ -786,6 +797,15 @@ enum ScreenshotFeatureTests {
                                                             selectionInProgress: false,
                                                             capturePending: false),
                "the capture chooser disappears for the whole drag and while capture is pending")
+        suite.expect(ScreenshotSupport.offersRepeatLastRegion(isPickingColor: false,
+                                                        storedRegionDisplayIsAvailable: true),
+               "the repeat hint is offered once a region is stored on a display still in the session")
+        suite.expect(!ScreenshotSupport.offersRepeatLastRegion(isPickingColor: false,
+                                                         storedRegionDisplayIsAvailable: false),
+               "no repeat hint before the first capture, or when its display is gone")
+        suite.expect(!ScreenshotSupport.offersRepeatLastRegion(isPickingColor: true,
+                                                         storedRegionDisplayIsAvailable: true),
+               "the colour picker has no region to repeat, matching repeatLastRegion's own guard")
         let captureSelectionSource = (try? String(
             contentsOfFile: "Sources/Vorssaint/Services/QuickTools/ScreenshotSelectionController.swift",
             encoding: .utf8)) ?? ""

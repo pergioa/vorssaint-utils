@@ -17,6 +17,7 @@ struct MetricsTests {
             ("metrics", { MetricsFeatureTests.run(suite) }),
             ("clipboard", { ClipboardFeatureTests.run(suite) }),
             ("pointer-input", { PointerInputFeatureTests.run(suite) }),
+            ("scroll-modifier", { ScrollHorizontalModifierTests.run(suite) }),
             ("preferences", { PreferencesFeatureTests.run(suite) }),
             ("app-management", { AppManagementFeatureTests.run(suite) }),
             ("window-layout", { WindowLayoutFeatureTests.run(suite) }),
@@ -24,6 +25,7 @@ struct MetricsTests {
             ("mixer", {
                 MixerNativeDragTests.run(suite)
                 MixerOutputAdjustmentContract.run(suite)
+                MixerInputVolumeContract.run(suite)
                 MixerFeatureTests.run(suite)
             }),
             ("shelf", { ShelfFeatureTests.run(suite) }),
@@ -43,6 +45,8 @@ struct MetricsTests {
             ("features", { FeatureCatalogTests.run(suite) }),
             ("utilities", { UtilitiesFeatureTests.run(suite) }),
             ("settings", { SettingsFeatureTests.run(suite) }),
+            ("display-restoration", { DisplayRestorationTests.run(suite) }),
+            ("software-dimming", { SoftwareDimmingRouteTests.run { suite.expect($0, $1) } }),
             ("capture", { ScreenshotSelectionRefreshContract.run(suite) }),
             ("keyboard", {
                 KeyboardFeatureTests.run(suite)
@@ -58,6 +62,7 @@ struct MetricsTests {
             ("recording", {
                 RecorderSampleTimingTests.run(suite)
                 RecorderWriterTests.run(suite)
+                RecorderExportChipTests.run { suite.expect($0, $1) }
             }),
             ("network", {
                 NetworkFeatureTests.run(suite)
@@ -71,7 +76,15 @@ struct MetricsTests {
             ("cleaner", { CleanerEligibilityTests.run(suite) }),
             ("uninstaller", { UninstallerFlowTests.run(suite) }),
             ("launcher", { QuickLauncherContract.run(suite) }),
-            ("switcher", { SwitcherScrollContract.run(suite) }),
+            ("switcher", {
+                SwitcherScrollContract.run(suite)
+                SwitcherActivationTests.run(suite)
+            }),
+            ("keep-awake", {
+                KeepAwakeCatalogContract.run(suite)
+                KeepAwakeTimerHandoffTests.run { suite.expect($0, $1) }
+            }),
+            ("emoji", { CommandBarEmojiContract.run(suite) }),
         ]
         var selected = Set<String>()
         var listOnly = false

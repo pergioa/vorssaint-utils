@@ -794,6 +794,8 @@ enum UpdateFeatureTests {
                "an elevated install hands the bundle back to the user")
         suite.expect(installerScript.contains("update-old.$PID"),
                "the swap backup name is unique per run so a stale root-owned one never blocks it")
+        suite.expect(installerScript.contains("STAGE=\"$DIR/.$NAME.update-new\""),
+               "the staged copy is hidden so search never lists it under the staging name")
         suite.expect(installerScript.contains("launchctl asuser"),
                "installer script relaunches as the user when running as root")
         suite.expect(installerScript.contains("$RESULT.progress") && installerScript.contains("finalize"),

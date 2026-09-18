@@ -239,17 +239,21 @@ enum NotchTests {
         menuSpaceReuseContracts(suite)
         menuBarHeightContracts(suite)
         musicLabelContracts(suite)
+        NotchPanelTests.run { suite.expect($0, $1) }
         NotchHoverTests.run(suite)
         NotchScreenEdgeClickTests.run(suite)
         NotchPresentationRefreshContract.run(suite)
         NotchScreenRefreshContract.run(suite)
         NotchDestinationContract.run(suite)
         NotchMusicVisibilityTests.run(suite)
+        NotchEqualizerTests.run { suite.expect($0, $1) }
+        NotchLyricsTimelineTests.run { suite.expect($0, $1) }
         NotchUpdateTests.run(suite)
         NotchCaptureKeyboardTests.run(suite)
         NotchDownloadProgressTests.run(suite)
         NotchSliderEditingTests.run(suite)
         NotchFileToolsTests.run(suite)
+        NotchAudioLevelTests.run { suite.expect($0, $1) }
         calendarContracts(suite)
         NotchNotificationTests.run(suite)
         NotchNotificationReaderTests.run(suite)

@@ -136,6 +136,10 @@ enum SettingsBackupSupport {
         DefaultsKey.systemShortcutsSuppressed,
         // DDC capability belongs to one physical monitor on one Mac port.
         DefaultsKey.brightnessDDCWriteOnlyPaths,
+        // Restoring it would skip the one-time recheck of the cache above on
+        // a Mac that still holds its own stale verdicts.
+        DefaultsKey.brightnessDDCWriteOnlyPathsRechecked,
+        DefaultsKey.brightnessForcedSoftwarePaths,
     ]
 
     /// The file's content: an envelope with the format version, the app
