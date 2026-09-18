@@ -1280,6 +1280,23 @@ enum SwitcherModelFeatureTests {
                "the Dock Preview panel starts fully solid")
         suite.expect(registeredDefaults[DefaultsKey.dockPreviewQuitAppOnClose] as? Bool == false,
                "the Dock Preview close button closes one window by default")
+        suite.expect(registeredDefaults[DefaultsKey.dockPreviewOrderByCreation] as? Bool == false,
+               "Dock Preview keeps last-use window order by default")
+        func dockPreviewWindow(id: CGWindowID) -> SwitcherItem {
+            SwitcherItem(id: "w.\(id)", title: "Window \(id)", appName: "App",
+                         pid: 1, windowOwnerPID: 1, windowID: id,
+                         isOnScreen: true, isAppHidden: false, isMinimized: false,
+                         isFullscreen: false, isOnHiddenSpace: false, frame: .zero)
+        }
+        let lastUseOrder = [dockPreviewWindow(id: 30), dockPreviewWindow(id: 10), dockPreviewWindow(id: 20)]
+        suite.expect(DockPreviewSupport.orderedWindows(lastUseOrder, order: .lastUse).map(\.windowID)
+                == [30, 10, 20],
+               "last-use order leaves the enumerated window list unchanged")
+        suite.expect(DockPreviewSupport.orderedWindows(lastUseOrder, order: .creation).map(\.windowID)
+                == [10, 20, 30],
+               "creation order sorts windows by ascending window ID")
+        suite.expect(DockPreviewSupport.orderedWindows([], order: .creation).isEmpty,
+               "creation order keeps an empty list empty")
         suite.expect(DockPreviewSupport.closeAction(quitAppOnClose: false) == .closeWindow
                 && DockPreviewSupport.closeAction(quitAppOnClose: true) == .quitApp,
                "the Dock Preview close preference selects exactly one close action")
@@ -1840,6 +1857,8 @@ enum SwitcherModelFeatureTests {
                "the Shelf provider rejects an untrustworthy status-item frame")
         suite.expect(statusHitTestCode.contains(statusFrameCall) && statusHitTestCode.contains("return false"),
                "status-item hit testing rejects an untrustworthy frame")
+        suite.expect(statusHitTestCode.contains("clipboardPreviewStatusItem"),
+               "status-item hit testing also covers the clipboard preview item")
 
         // MARK: The panel surface reaches the popover arrow (issue #1030)
 
@@ -4427,8 +4446,8 @@ enum SwitcherModelFeatureTests {
                                                         ownPID: 99),
                "App Switcher retries restoration when the selected target started minimized")
         suite.expect(!SwitcherSupport.shouldContinueFocusRetry(targetPID: 10,
-                                                         sourcePID: 20,
-                                                         frontmostPID: 10,
+                                                          sourcePID: 20,
+                                                          frontmostPID: 10,
                                                          targetIsMinimized: true,
                                                          targetStartedMinimized: true,
                                                          targetWasObservedRestored: true,
@@ -4453,8 +4472,101 @@ enum SwitcherModelFeatureTests {
                                                          knownWindowIDs: [101, 102],
                                                          targetAppWindowIDs: [777],
                                                          targetAppFocusedWindowID: 777,
-                                                         ownPID: 99),
+                                                          ownPID: 99),
                "App Switcher focus retries let go of a window the app opened after the switch")
+        // The guard only reads Accessibility once the cheap window-server list
+        // shows the app gained something. Both lists must therefore be taken
+        // in the same scope: the on-screen list lags a newly opened window,
+        // and comparing it against an all-windows snapshot reported nothing
+        // new in exactly the race the guard exists for. Comments are stripped
+        // first, so the one explaining that lag cannot satisfy the check.
+        let activatorSource = (try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/Switcher/WindowActivator.swift",
+            encoding: .utf8)) ?? ""
+        let activatorCode = activatorSource
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        let windowScopes = activatorCode
+            .components(separatedBy: "windowIDs(ownerPID:")
+            .dropFirst()
+            .compactMap { $0.components(separatedBy: ")").first }
+            .filter { $0.contains("options: .") }
+        suite.expect(windowScopes.count >= 2 && windowScopes.allSatisfy { $0.contains(".optionAll") },
+               "the retry's live window list is gathered in the same scope as the snapshot it is compared against")
+        // A switch away from a fullscreen app reaches its target through a hop,
+        // whose arrival pulses raise it for up to a second. They must ask the
+        // same guard before raising, or Command-N in the app just reached is
+        // covered by the target on the next pulse. Comments are stripped, so a
+        // doc comment naming the guard cannot stand in for the call.
+        let hopFocusBody: String = {
+            guard let start = activatorCode.range(of: "static func focusAfterSpaceHop(") else { return "" }
+            let rest = activatorCode[start.upperBound...]
+            let end = rest.range(of: "static func ")?.lowerBound ?? rest.endIndex
+            return String(rest[..<end])
+        }()
+        let hopGuard = hopFocusBody.range(of: "shouldContinueFocusRetry(")
+        // Whatever the pass uses to bring the window forward, the guard comes
+        // first. Naming one of those calls would pin today's spelling and go
+        // red on a refactor that broke nothing.
+        let hopRaise = ["prepareWindowForActivation(", "activateApp(", "focusWindow("]
+            .compactMap { hopFocusBody.range(of: $0)?.lowerBound }
+            .min()
+        suite.expect(hopGuard != nil && hopRaise != nil && hopGuard!.lowerBound < hopRaise!,
+               "the hop's arrival pass consults the retry guard before it raises the target")
+        let spaceHopCode = ((try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/Switcher/SpaceHop.swift",
+            encoding: .utf8)) ?? "")
+            .components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        suite.expect(spaceHopCode.contains("state: self.focusState")
+               && spaceHopCode.contains("knownWindowIDs: WindowActivator.focusSnapshot(ownerPID:"),
+               "a hop snapshots the app's windows when it begins and hands that state to every pulse")
+        // Review of #1578: a hop across two or more desktops arrives with
+        // whatever tops each desktop it passed in front. Reading that as "the
+        // user moved on" would leave the window they picked behind that app,
+        // so a hop's pass judges the app's own focus instead.
+        suite.expect(SwitcherSupport.shouldContinueFocusRetry(targetPID: 10,
+                                                        sourcePID: 20,
+                                                        frontmostPID: 30,
+                                                        targetIsMinimized: false,
+                                                        targetStartedMinimized: false,
+                                                        knownWindowIDs: [101],
+                                                        targetAppWindowIDs: [101],
+                                                        targetAppFocusedWindowID: 101,
+                                                        ignoresForeground: true,
+                                                        ownPID: 99),
+               "a hop still raises its target when another desktop's app arrived in front")
+        suite.expect(!SwitcherSupport.shouldContinueFocusRetry(targetPID: 10,
+                                                         sourcePID: 20,
+                                                         frontmostPID: 30,
+                                                         targetIsMinimized: false,
+                                                         targetStartedMinimized: false,
+                                                         knownWindowIDs: [101],
+                                                         targetAppWindowIDs: [101, 777],
+                                                         targetAppFocusedWindowID: 777,
+                                                         ignoresForeground: true,
+                                                         ownPID: 99),
+               "a hop still gives up once the app itself moved to a window it opened later")
+        suite.expect(!SwitcherSupport.shouldContinueFocusRetry(targetPID: 10,
+                                                         sourcePID: 20,
+                                                         frontmostPID: 30,
+                                                         targetIsMinimized: false,
+                                                         targetStartedMinimized: false,
+                                                         knownWindowIDs: [101],
+                                                         targetAppWindowIDs: [101],
+                                                         targetAppFocusedWindowID: 101,
+                                                         ownPID: 99),
+               "the ordinary passes still stand down when the user moved to another app")
+        let hopFocusCall: String = {
+            guard let start = activatorCode.range(of: "static func focusAfterSpaceHop(") else { return "" }
+            let rest = activatorCode[start.upperBound...]
+            let end = rest.range(of: "static func ")?.lowerBound ?? rest.endIndex
+            return String(rest[..<end])
+        }()
+        suite.expect(hopFocusCall.contains("ignoresForeground: true"),
+               "the hop's arrival pass asks the guard in the mode that ignores who is in front")
         suite.expect(SwitcherSupport.shouldContinueFocusRetry(targetPID: 10,
                                                         sourcePID: 20,
                                                         frontmostPID: 10,
@@ -4679,6 +4791,23 @@ enum SwitcherModelFeatureTests {
             owned: legacyMarker, setEnabled: recordRecoveryWrite, persist: { _ in })
         suite.expect(recoveredOwnership == [27, 220] && recoveryWrites == [28],
                "crash recovery gives back stale keys without toggling retained keys or taking new ones")
+        // The switcher is not the only source by the time recovery runs: a
+        // feature that claimed first holds its ids too, so launch keeps what
+        // every source wants together rather than the switcher's ids alone.
+        var earlyClaimWrites: [Int32] = []
+        let earlyClaimOwnership = SystemShortcutTakeoverSupport.apply(
+            SystemShortcutTakeoverSupport.recoveryTransition(
+                from: [1, 28, 30],
+                keeping: SystemShortcutTakeoverSupport.union(
+                    of: ["switcher": [1], "keepAwakeShortcut": [30]])),
+            owned: [1, 28, 30],
+            setEnabled: { id, _ in
+                earlyClaimWrites.append(id)
+                return true
+            },
+            persist: { _ in })
+        suite.expect(earlyClaimOwnership == [1, 30] && earlyClaimWrites == [28],
+               "launch keeps a claim made before recovery ran alongside the switcher's ids")
         // Say the WindowServer refused 28: `apply` leaves it in the marker, so
         // every later transition asks for it again and the give-back finishes
         // at the next take-over or in the next process.
@@ -4725,6 +4854,82 @@ enum SwitcherModelFeatureTests {
                "the retry finishes the give-back")
         suite.expect(!writeAheadMissing, "ownership is persisted before every disable")
 
+        // A claimed shortcut resolves to every live id that is exactly that
+        // combination - the two screenshot rows share Shift-Command on different keys and
+        // must not be confused; a disabled row still counts, `apply` sorts it out.
+        let liveForClaims: [LiveSystemShortcut] = [
+            LiveSystemShortcut(id: 28, shortcut: GlobalShortcut(keyCode: 20, modifiers: [.command, .shift]), enabled: true),
+            LiveSystemShortcut(id: 30, shortcut: GlobalShortcut(keyCode: 21, modifiers: [.command, .shift]), enabled: true),
+            LiveSystemShortcut(id: 64, shortcut: GlobalShortcut(keyCode: 49, modifiers: [.command]), enabled: false),
+        ]
+        suite.expect(SystemShortcutTakeoverSupport.ids(matching: GlobalShortcut(keyCode: 21, modifiers: [.command, .shift]),
+                                                 in: liveForClaims) == [30]
+               && SystemShortcutTakeoverSupport.ids(matching: GlobalShortcut(keyCode: 49, modifiers: [.command]),
+                                                    in: liveForClaims) == [64]
+               && SystemShortcutTakeoverSupport.ids(matching: .screenshotDefault, in: liveForClaims).isEmpty,
+               "a claimed shortcut maps to exactly the live ids that equal it")
+        suite.expect(SystemShortcutTakeoverSupport.union(of: ["switcher": [1, 2], "screenshotShortcut": [30], "shelf": []]) == [1, 2, 30]
+               && SystemShortcutTakeoverSupport.union(of: [:]).isEmpty,
+               "the service applies what every source wants, together")
+        suite.expect(SystemShortcutTakeoverSupport.transition(from: [1, 30], to: [], currentlyEnabled: [])
+               == SystemShortcutTransition(suppress: [], restore: [1, 30]),
+               "quitting hands back every key any feature took over")
+        // Launch recovery records the ids it kept as the switcher's own, so the
+        // first claim of the launch - a row with no opt-in of its own resolves
+        // to nothing - asks for those ids too and hands none of them back.
+        suite.expect(SystemShortcutTakeoverSupport.transition(
+                   from: [1, 2],
+                   to: SystemShortcutTakeoverSupport.union(of: ["switcher": [1, 2]]),
+                   currentlyEnabled: []) == SystemShortcutTransition(suppress: [], restore: []),
+               "a claim with no opt-in leaves the marker launch recovery is holding alone")
+        // A key already taken over is switched off in the live table, so the
+        // table alone calls it free. What the recorder asks instead counts the
+        // ids the service is holding as macOS's, and falls back to the table
+        // for a key it is not holding.
+        let areaShot = GlobalShortcut(keyCode: 21, modifiers: [.command, .shift])
+        let liveWhileHeld: [LiveSystemShortcut] = [
+            LiveSystemShortcut(id: 30, shortcut: areaShot, enabled: false),
+            LiveSystemShortcut(id: 28, shortcut: GlobalShortcut(keyCode: 20, modifiers: [.command, .shift]), enabled: true),
+        ]
+        let areaShotIsMacOS = SystemShortcutTakeoverSupport.conflictsWithMacOS(
+            areaShot, liveEntries: liveWhileHeld, symbolicHotKeys: nil, held: [30])
+        suite.expect(areaShotIsMacOS
+               && !SystemShortcutTakeoverSupport.conflictsWithMacOS(
+                   areaShot, liveEntries: liveWhileHeld, symbolicHotKeys: nil, held: [1, 2])
+               && SystemShortcutTakeoverSupport.conflictsWithMacOS(
+                   GlobalShortcut(keyCode: 20, modifiers: [.command, .shift]),
+                   liveEntries: liveWhileHeld, symbolicHotKeys: nil, held: []),
+               "a key this app is holding still counts as macOS's, and one it is not holding follows the live table")
+        // The switcher's rows may record the native keys the switcher itself holds
+        // (main permits them per role); every other row sees them as macOS's.
+        let commandTab = GlobalShortcut(keyCode: 48, modifiers: [.command])
+        let liveWithSwitcherKey = [LiveSystemShortcut(id: 1, shortcut: commandTab, enabled: false)]
+        suite.expect(!SystemShortcutTakeoverSupport.conflictsWithMacOS(
+                   commandTab, liveEntries: liveWithSwitcherKey, symbolicHotKeys: nil, held: [1], role: .switcher)
+               && SystemShortcutTakeoverSupport.conflictsWithMacOS(
+                   commandTab, liveEntries: liveWithSwitcherKey, symbolicHotKeys: nil, held: [1], role: nil),
+               "the switcher's own row may record the native key it is holding; any other row sees it as macOS's")
+        // The recorder's one rule for a combination macOS answers: ask unless the
+        // user already agreed to exactly this key on this row; tidy the entry
+        // once the row moves to a key macOS does not want.
+        suite.expect(SystemShortcutTakeoverSupport.recorderDecision(shortcut: areaShot, conflictsWithMacOS: true,
+                                                              takenOver: false, current: .screenshotDefault) == .offer
+               && SystemShortcutTakeoverSupport.recorderDecision(shortcut: areaShot,
+                                                                 conflictsWithMacOS: areaShotIsMacOS,
+                                                                 takenOver: true, current: areaShot) == .save(clearTakeOver: false)
+               && SystemShortcutTakeoverSupport.recorderDecision(shortcut: GlobalShortcut(keyCode: 49, modifiers: [.command]),
+                                                                 conflictsWithMacOS: true, takenOver: true, current: areaShot) == .offer
+               && SystemShortcutTakeoverSupport.recorderDecision(shortcut: areaShot, conflictsWithMacOS: true,
+                                                                 takenOver: true, current: nil) == .offer
+               && SystemShortcutTakeoverSupport.recorderDecision(shortcut: .screenshotDefault, conflictsWithMacOS: false,
+                                                                 takenOver: true, current: areaShot) == .save(clearTakeOver: true),
+               "a taken-over row re-records its own key silently, is asked again for any other macOS key or when no key is recorded, and forgets the take-over when it leaves macOS keys")
+        suite.expect(GlobalShortcutRole.allCases.filter { !$0.supportsTakeOver } == [.switcher, .switcherWindow, .radialMenu]
+               && GlobalShortcutRole.keepAwake.supportsTakeOver && GlobalShortcutRole.finderRename.supportsTakeOver,
+               "only the rows whose key a feature claims may offer to take a macOS shortcut over")
+        suite.expect(SettingsBackupSupport.exportKeys().contains(DefaultsKey.systemShortcutTakeOverKeys)
+               && registeredDefaults[DefaultsKey.systemShortcutTakeOverKeys] == nil,
+               "which shortcuts to take over is a preference that travels with a settings backup")
         suite.expect(SwitcherSupport.isCurrentActivationGeneration(12, current: 12)
                && !SwitcherSupport.isCurrentActivationGeneration(11, current: 12),
                "App Switcher ignores retries left by an older activation")

@@ -67,6 +67,32 @@ enum ClipboardFeatureTests {
         suite.expect(Defaults.registeredDefaults[DefaultsKey.clipboardHistoryQuickPreview] as? Bool == false,
                "clipboard history quick preview is closed by default")
 
+        // MARK: Clipboard menu bar preview
+
+        suite.expect(Defaults.registeredDefaults[DefaultsKey.clipboardHistoryMenuBarPreview] as? Bool == false,
+               "the menu bar clipboard preview is off until asked for")
+        suite.expect(Defaults.registeredDefaults[DefaultsKey.clipboardHistoryMenuBarPreviewLength] as? Int == 20,
+               "the menu bar clipboard preview starts at twenty characters")
+        suite.expect(Defaults.sanitizedClipboardMenuBarPreviewLength(20) == 20,
+               "menu bar preview length in range passes through")
+        suite.expect(Defaults.sanitizedClipboardMenuBarPreviewLength(1) == 5,
+               "menu bar preview length below the floor clamps up, so a typed 1 does not jump to the default")
+        suite.expect(Defaults.sanitizedClipboardMenuBarPreviewLength(999) == 50,
+               "menu bar preview length above the ceiling clamps down")
+        let shortMenuBarPreview = ClipboardHistoryEntry(text: "hi").menuBarText(maxCharacters: 20)
+        suite.expect(shortMenuBarPreview == "hi",
+               "a copy shorter than the limit shows in full, with no ellipsis")
+        let longMenuBarPreview = ClipboardHistoryEntry(text: String(repeating: "a", count: 200))
+            .menuBarText(maxCharacters: 20)
+        suite.expect(longMenuBarPreview.count == 21 && longMenuBarPreview.hasSuffix("…"),
+               "a copy longer than the limit is cut to the limit plus an ellipsis")
+        L10n.shared.language = .enUS
+        let imageMenuBarPreview = ClipboardHistoryEntry(text: "", kind: .image,
+                                                        imageWidth: 400, imageHeight: 300)
+            .menuBarText(maxCharacters: 20)
+        suite.expect(imageMenuBarPreview == "Image · 400×300",
+               "an image copy is labeled the same way every other image row is, not left as bare dimensions")
+
         // MARK: Clipboard auto clear timing
 
         let autoClearCopiedAt = Date(timeIntervalSince1970: 1_000_000)
