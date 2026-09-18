@@ -12,6 +12,23 @@ import ImageIO
 import VMStatisticsCompat
 
 enum FeatureCatalogTests {
+    private final class InstallerFileManager: FileManager, @unchecked Sendable {
+        let localApplications: URL
+        var userApplications: URL?
+
+        init(root: URL) {
+            localApplications = root.appendingPathComponent("System/Applications", isDirectory: true)
+            userApplications = root.appendingPathComponent("Home/Applications", isDirectory: true)
+            super.init()
+        }
+
+        override func urls(for directory: SearchPathDirectory, in domain: SearchPathDomainMask) -> [URL] {
+            guard directory == .applicationDirectory else { return [] }
+            if domain == .localDomainMask { return [localApplications] }
+            return userApplications.map { [$0] } ?? []
+        }
+    }
+
     static func run(_ suite: TestSuite) {
         func expectFormat(_ format: String, _ expected: [String], _ label: String,
                           file: StaticString = #filePath, line: UInt = #line) {
@@ -240,7 +257,7 @@ enum FeatureCatalogTests {
 
         // MARK: Features hub catalog
 
-        suite.expect(AppFeature.allCases.count == 68, "feature catalog has 68 features")
+        suite.expect(AppFeature.allCases.count == 69, "feature catalog has 69 features")
         suite.expect(Set(AppFeature.allCases.map(\.rawValue)).count == AppFeature.allCases.count,
                "feature ids are unique")
         suite.expect(AppFeature.allCases.map(\.rawValue) == [
@@ -253,7 +270,7 @@ enum FeatureCatalogTests {
             "keepAwake", "brightness", "extraBrightness", "bluetoothSleep",
             "quickLauncher", "quickToggles", "colorPicker", "screenOCR", "cleaningMode", "mediaTools",
             "cleaner", "uninstaller", "homebrew", "appUpdates", "screenshot", "cameraPreview",
-            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess", "notch", "notchCalendar", "notchNotifications", "notchGestures", "notchTimer", "notchAccessories", "notchLyrics", "notchQueue", "notchLiveEqualizer", "notchDownloads",
+            "radialMenu", "scratchpad", "commandBar", "screenRecorder", "killProcess", "portManager", "notch", "notchCalendar", "notchNotifications", "notchGestures", "notchTimer", "notchAccessories", "notchLyrics", "notchQueue", "notchLiveEqualizer", "notchDownloads",
             "monitorCPU", "monitorGPU", "monitorMemory", "monitorNetwork", "monitorDisk", "monitorPower",
             "fanControl",
         ], "feature ids are stable (they persist inside availability keys)")
@@ -378,9 +395,10 @@ enum FeatureCatalogTests {
                 && (AppFeature.availabilityDefaults[AppFeature.diskImageInstaller.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.focusFollowsMouse.availabilityKey] as? Bool) == false
                 && (AppFeature.availabilityDefaults[AppFeature.killProcess.availabilityKey] as? Bool) == false
+                && (AppFeature.availabilityDefaults[AppFeature.portManager.availabilityKey] as? Bool) == false
                 && AppFeature.allCases.filter {
                     $0 != .focusFollowsMouse && $0 != .fanControl && $0 != .diskImageInstaller
-                        && $0 != .killProcess && $0 != .scrollHorizontal
+                        && $0 != .killProcess && $0 != .scrollHorizontal && $0 != .portManager
                 }.allSatisfy {
                     (AppFeature.availabilityDefaults[$0.availabilityKey] as? Bool) == true
                 },
@@ -489,17 +507,17 @@ enum FeatureCatalogTests {
 
         for language in AppLanguage.allCases {
             let strings = FeatureStrings.diskImageInstaller(language)
-            expectFormat(strings.promptBodyFormat, ["@"],
+            expectFormat(strings.promptBodyFormat, ["@", "@"],
                          "\(language.rawValue) installer prompt format")
-            expectFormat(strings.installedBodyFormat, ["@"],
+            expectFormat(strings.installedBodyFormat, ["@", "@"],
                          "\(language.rawValue) installer success format")
-            expectFormat(strings.installedKeepingMountBodyFormat, ["@"],
+            expectFormat(strings.installedKeepingMountBodyFormat, ["@", "@"],
                          "\(language.rawValue) installer mounted-image format")
-            expectFormat(strings.installedKeepingDownloadBodyFormat, ["@"],
+            expectFormat(strings.installedKeepingDownloadBodyFormat, ["@", "@"],
                          "\(language.rawValue) installer kept-download format")
             expectFormat(strings.alreadyInstalledBodyFormat, ["@"],
                          "\(language.rawValue) installer existing-app format")
-            expectFormat(strings.installedKeptDownloadBodyFormat, ["@"],
+            expectFormat(strings.installedKeptDownloadBodyFormat, ["@", "@"],
                          "\(language.rawValue) installer kept-by-choice format")
             expectFormat(strings.installingFormat, ["@"],
                          "\(language.rawValue) installer progress format")
@@ -533,6 +551,56 @@ enum FeatureCatalogTests {
             applicationsURL: URL(fileURLWithPath: "/Applications", isDirectory: true))?.path
             == "/Applications/Example.app",
             "a top-level app gets one fixed Applications destination")
+        suite.expect(DiskImageInstallerSupport.destinationURL(
+            for: URL(fileURLWithPath: "/Volumes/Installer/Example.app"),
+            applicationsURL: URL(fileURLWithPath: "/Users/test/Applications",
+                                 isDirectory: true))?.path
+            == "/Users/test/Applications/Example.app",
+            "the installer support accepts the current user's Applications directory")
+        suite.expect(DiskImageInstallerSupport.applicationsDomain(useUserApplications: false)
+                == .localDomainMask
+                && DiskImageInstallerSupport.applicationsDomain(useUserApplications: true)
+                == .userDomainMask,
+               "the disk image setting selects the system or user application domain")
+        suite.expect(DiskImageInstallerSupport.collisionDomains(useUserApplications: false)
+                == [.localDomainMask]
+                && DiskImageInstallerSupport.collisionDomains(useUserApplications: true)
+                == [.localDomainMask, .userDomainMask],
+               "only the opt-in installer checks both application domains for collisions")
+        let installerDestinations = DiskImageInstallerSupport.destinationURLs(
+            for: URL(fileURLWithPath: "/Volumes/Installer/Example.app"),
+            applicationsURLs: [
+                URL(fileURLWithPath: "/Applications", isDirectory: true),
+                URL(fileURLWithPath: "/Users/test/Applications", isDirectory: true),
+            ])
+        suite.expect(installerDestinations?.map(\.path) == [
+            "/Applications/Example.app",
+            "/Users/test/Applications/Example.app",
+        ], "the already-installed guard covers both application directories")
+        suite.expect(DiskImageInstallerSupport.destinationURLs(
+            for: URL(fileURLWithPath: "/Volumes/Installer/Example.app"),
+            applicationsURLs: []) == nil,
+            "missing application-domain resolutions fail closed")
+        let installerFixture = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vorss-installer-\(UUID().uuidString)", isDirectory: true)
+        let installerFM = InstallerFileManager(root: installerFixture)
+        let installerApp = URL(fileURLWithPath: "/Volumes/Installer/Example.app")
+        let missingUserDestination = installerFM.userApplications!
+            .appendingPathComponent("Example.app", isDirectory: true)
+        let missingFolderCollisions = DiskImageInstallerSupport.collisionURLs(
+            for: installerApp, useUserApplications: true, fileManager: installerFM)
+        suite.expect(missingFolderCollisions?.contains(missingUserDestination) == true
+                && missingFolderCollisions?.allSatisfy { !installerFM.fileExists(atPath: $0.path) } == true,
+               "a missing home Applications folder still allows an install candidate")
+        suite.expect(!installerFM.fileExists(atPath: installerFixture.path),
+               "detecting an install candidate never creates the home Applications folder")
+        installerFM.userApplications = nil
+        suite.expect(DiskImageInstallerSupport.collisionURLs(
+            for: installerApp, useUserApplications: true, fileManager: installerFM) == nil,
+            "an unavailable user search path fails closed for opted-in installs")
+        suite.expect(DiskImageInstallerSupport.collisionURLs(
+            for: installerApp, useUserApplications: false, fileManager: installerFM)?.count == 1,
+            "default installs do not depend on the user's application search path")
         suite.expect(DiskImageInstallerSupport.destinationURL(
             for: URL(fileURLWithPath: "/Volumes/Installer/.Hidden.app"),
             applicationsURL: URL(fileURLWithPath: "/Applications", isDirectory: true)) == nil,

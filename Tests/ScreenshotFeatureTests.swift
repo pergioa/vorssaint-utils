@@ -1182,6 +1182,27 @@ enum ScreenshotFeatureTests {
         suite.expect(!ScreenshotSupport.canReorder(layered, moving: UUID(), .forward)
                 && !ScreenshotSupport.canReorder([], moving: layered[0].id, .backward),
                "an annotation that is not there can never be reordered")
+        let screenshotEditorSource = ((try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/QuickTools/ScreenshotEditorController.swift",
+            encoding: .utf8)) ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        let screenshotSupportSource = ((try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/QuickTools/ScreenshotSupport.swift",
+            encoding: .utf8)) ?? "")
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        suite.expect(screenshotEditorSource.contains("if tool != .select, tool != .crop {\n            selectedID = nil\n        }"),
+               "the editor clears stale selection before creating a new annotation")
+        suite.expect(!screenshotEditorSource.contains("annotations.append(annotation)\n            selectedID = annotation.id\n            draftID = annotation.id")
+                && screenshotEditorSource.contains("} else if let draftID {\n                selectedID = draftID"),
+               "a shape is selected only after its drag ends")
+        suite.expect(screenshotSupportSource.contains("let color: ColorID?")
+                && screenshotSupportSource.contains("let stroke: StrokeID?")
+                && screenshotSupportSource.contains("let arrowStyle: ArrowStyleID?"),
+               "selection styles can leave controls untouched when a mark does not use them")
 
         let resized = ScreenshotSupport.resizedRect(CGRect(x: 10, y: 10, width: 100, height: 100),
                                                     dragging: .bottomRight,
@@ -1225,6 +1246,128 @@ enum ScreenshotFeatureTests {
                                   using: .winding,
                                   transform: .identity),
                "the arrow stays filled where its shaft meets the head")
+        let arrowStyles = ScreenshotSupport.ArrowStyleID.allCases
+        suite.expect(arrowStyles == [.filled, .outline, .open, .doubleEnded, .scribbly]
+                && ScreenshotSupport.ArrowStyleID.sanitized("unknown") == .filled,
+               "the screenshot editor offers five arrow styles and safely falls back to solid")
+        let openArrow = ScreenshotSupport.Annotation(tool: .arrow,
+                                                     points: [.zero, CGPoint(x: 100, y: 100)],
+                                                     arrowStyle: .open)
+        suite.expect(openArrow.arrowStyle == .open,
+               "arrow annotations retain the chosen style independently of color and thickness")
+        let stableScribble = ScreenshotSupport.scribblyArrowGeometry(
+            from: .zero,
+            to: CGPoint(x: 160, y: 80),
+            strokeWidth: 4,
+            seed: 17)
+        let sameScribble = ScreenshotSupport.scribblyArrowGeometry(
+            from: .zero,
+            to: CGPoint(x: 160, y: 80),
+            strokeWidth: 4,
+            seed: 17)
+        let differentScribble = ScreenshotSupport.scribblyArrowGeometry(
+            from: .zero,
+            to: CGPoint(x: 160, y: 80),
+            strokeWidth: 4,
+            seed: 18)
+        suite.expect(stableScribble == sameScribble
+                && stableScribble != differentScribble
+                && stableScribble.shaft.count > 2,
+               "scribbly arrows vary by seed but keep one stable design when redrawn")
+        suite.expect(ScreenshotSupport.arrowStrokePath(from: .zero, to: CGPoint(x: 100, y: 0),
+                                                 strokeWidth: 4, style: .filled, seed: 0) == nil
+                && arrowStyles.filter { $0 != .filled }.allSatisfy {
+                    ScreenshotSupport.arrowStrokePath(from: .zero, to: CGPoint(x: 100, y: 0),
+                                                      strokeWidth: 4, style: $0, seed: 17)?
+                        .boundingBox.width ?? 0 >= 100
+                },
+               "the solid arrow is a filled silhouette and every other style is one stroked path")
+        // With shadows on, a shaft pixel under the head's shadow must match a
+        // shaft pixel far from the head: the head and the shaft are one
+        // stroke, so the head never shades the shaft where they meet.
+        let seamShaft: [ScreenshotSupport.ArrowStyleID: Bool] = Dictionary(
+            uniqueKeysWithValues: [ScreenshotSupport.ArrowStyleID.open, .doubleEnded].map { style in
+                let width = 160, height = 80
+                var pixels = [UInt8](repeating: 0, count: width * height * 4)
+                let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+                    guard let context = CGContext(data: buffer.baseAddress,
+                                                  width: width,
+                                                  height: height,
+                                                  bitsPerComponent: 8,
+                                                  bytesPerRow: width * 4,
+                                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+                    else { return false }
+                    context.translateBy(x: 0, y: CGFloat(height))
+                    context.scaleBy(x: 1, y: -1)
+                    ScreenshotRenderer.drawAnnotations(
+                        [ScreenshotSupport.Annotation(tool: .arrow,
+                                                      points: [CGPoint(x: 20, y: 40), CGPoint(x: 140, y: 40)],
+                                                      color: .green,
+                                                      stroke: .large,
+                                                      arrowStyle: style)],
+                        in: context,
+                        pixelated: nil,
+                        imageSize: CGSize(width: width, height: height),
+                        scale: 2,
+                        annotationShadowsEnabled: true)
+                    return true
+                }
+                // Rows are stored top-down, the same way the flipped context draws.
+                func pixel(_ x: Int, _ y: Int) -> ArraySlice<UInt8> {
+                    let offset = (y * width + x) * 4
+                    return pixels[offset..<offset + 4]
+                }
+                return (style, drawn && pixel(120, 40) == pixel(60, 40) && pixel(60, 40).last == 255)
+            })
+        suite.expect(seamShaft.values.allSatisfy { $0 },
+               "a stroked arrow's head casts no shadow onto its own shaft")
+        let thickArrow = ScreenshotSupport.Annotation(tool: .arrow, stroke: .large)
+        let thinArrow = ScreenshotSupport.Annotation(tool: .arrow, stroke: .small)
+        suite.expect(ScreenshotSupport.selectionStyle(for: thinArrow).stroke == .some(.small)
+                && ScreenshotSupport.selectionStyle(for: thinArrow)
+                    != ScreenshotSupport.selectionStyle(for: thickArrow),
+               "selecting a thin arrow exposes its own stroke in the editor controls")
+        let stickerStyle = ScreenshotSupport.selectionStyle(
+            for: ScreenshotSupport.Annotation(tool: .sticker,
+                                               color: .blue,
+                                               stroke: .large))
+        let pixelateStyle = ScreenshotSupport.selectionStyle(
+            for: ScreenshotSupport.Annotation(tool: .pixelate,
+                                               color: .green,
+                                               stroke: .large))
+        let highlightStyle = ScreenshotSupport.selectionStyle(
+            for: ScreenshotSupport.Annotation(tool: .highlight,
+                                               color: .yellow,
+                                               stroke: .large))
+        suite.expect(stickerStyle == ScreenshotSupport.SelectionStyle(color: nil,
+                                                                stroke: nil,
+                                                                arrowStyle: nil)
+                && pixelateStyle == stickerStyle
+                && highlightStyle.color == .some(.yellow)
+                && highlightStyle.stroke == nil
+                && highlightStyle.arrowStyle == nil,
+               "selection sync leaves unused sticker and pixelation controls alone")
+        suite.expect(screenshotEditorSource.contains("syncControls(to: hit)"),
+               "the editor synchronizes controls from the selected annotation")
+        let existingSelectionSource: String
+        if let start = screenshotEditorSource.range(of: "private func selectExistingAnnotation"),
+           let end = screenshotEditorSource.range(of: "private func updateDraft") {
+            existingSelectionSource = String(screenshotEditorSource[start.lowerBound..<end.lowerBound])
+        } else {
+            existingSelectionSource = ""
+        }
+        suite.expect(existingSelectionSource.contains("syncControls(to: hit)"),
+               "creation-tool taps synchronize controls before selecting the annotation")
+        let finishSelectionSource: String
+        if let start = screenshotEditorSource.range(of: "private func finishSelectDrag"),
+           let end = screenshotEditorSource.range(of: "private func selectExistingAnnotation") {
+            finishSelectionSource = String(screenshotEditorSource[start.lowerBound..<end.lowerBound])
+        } else {
+            finishSelectionSource = ""
+        }
+        suite.expect(finishSelectionSource.contains("syncControls(to: hit)"),
+               "selection-tool taps synchronize controls for every selected mark")
         suite.expect(abs(ScreenshotSupport.distance(from: CGPoint(x: 50, y: 10),
                                               toSegment: CGPoint(x: 0, y: 0),
                                               CGPoint(x: 100, y: 0)) - 10) < 0.001,
@@ -2022,6 +2165,8 @@ enum ScreenshotFeatureTests {
                "the screenshot rail ships in its useful numbered order")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotLastSticker] as? String == "check",
                "the sticker tool starts with a safe built-in choice")
+        suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotLastArrowStyle] as? String == "filled",
+               "the arrow tool starts with the existing solid style")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.screenshotShortcut] as? String
                 == "control+option+command:21",
                "the default screenshot shortcut is control option command 4")

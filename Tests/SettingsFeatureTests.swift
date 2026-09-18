@@ -166,6 +166,10 @@ enum SettingsFeatureTests {
         suite.expect(Defaults.registeredDefaults[DefaultsKey.finderPasteImageAsFile] as? Bool == false
                 && backupKeys.contains(DefaultsKey.finderPasteImageAsFile),
                "pasting copied images as files is opt-in and travels with settings backup")
+        suite.expect(Defaults.registeredDefaults[
+            DefaultsKey.diskImageInstallerUseUserApplications] as? Bool == false
+                && backupKeys.contains(DefaultsKey.diskImageInstallerUseUserApplications),
+               "installing disk-image apps for the current user is opt-in and travels with settings backup")
         suite.expect(Defaults.registeredDefaults[DefaultsKey.finderCutPasteShowHUD] as? Bool == true
                 && backupKeys.contains(DefaultsKey.finderCutPasteShowHUD),
                "the Finder cut and paste floating panel default is on and travels with settings backup")
