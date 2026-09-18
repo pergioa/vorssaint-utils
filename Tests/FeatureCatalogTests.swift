@@ -429,29 +429,6 @@ enum FeatureCatalogTests {
 
         // MARK: Hardware-gated installs
 
-        // Availability is only ever written by the runtime that gates it, so
-        // a new install surface cannot walk around the hardware check the way
-        // the hub's install-all button and the first-run picker once did.
-        // Two files are allowed to write the key directly, and both run where
-        // the gate cannot matter: the first-run seed writes a preset holding
-        // no hardware-dependent feature (pinned below), and the fan control
-        // migration restores an install that already existed, which the gate
-        // never revokes. A third entry here is a bug, not a new allowance.
-        var availabilityWriters: Set<String> = []
-        if let sources = FileManager.default.enumerator(atPath: "Sources") {
-            for case let path as String in sources where path.hasSuffix(".swift") {
-                let text = (try? String(contentsOfFile: "Sources/" + path, encoding: .utf8)) ?? ""
-                let writes = text.split(separator: "\n").contains {
-                    $0.contains(".set(") && $0.contains("availabilityKey")
-                }
-                if writes { availabilityWriters.insert((path as NSString).lastPathComponent) }
-            }
-        }
-        suite.expect(availabilityWriters == ["FeatureRuntime.swift",
-                                       "FeaturePresets.swift",
-                                       "Defaults.swift"],
-               "feature availability is written only where the hardware gate runs, "
-               + "found \(availabilityWriters.sorted())")
         suite.expect(FeaturePreset.allCases.allSatisfy { !$0.features.contains(.fanControl) },
                "no first-run preset installs a feature whose hardware the Mac may lack")
 

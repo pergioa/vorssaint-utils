@@ -2958,22 +2958,6 @@ enum SwitcherModelFeatureTests {
         suite.expect(useTrackerSource.contains(
                    "pid == ProcessInfo.processInfo.processIdentifier && ActivationHandoff.isHandingOff"),
                "only an activation the handoff caused is left out of the use history")
-        var bareActivationYields: [String] = []
-        var scannedActivationFiles = 0
-        if let sources = FileManager.default.enumerator(atPath: "Sources") {
-            for case let path as String in sources where path.hasSuffix(".swift") {
-                scannedActivationFiles += 1
-                guard (path as NSString).lastPathComponent != "ActivationHandoff.swift" else { continue }
-                let text = (try? String(contentsOfFile: "Sources/" + path, encoding: .utf8)) ?? ""
-                if text.contains("yieldActivation") {
-                    bareActivationYields.append((path as NSString).lastPathComponent)
-                }
-            }
-        }
-        suite.expect(scannedActivationFiles > 0 && bareActivationYields.isEmpty,
-               "activation is yielded only through ActivationHandoff, "
-               + "found a bare yield in \(bareActivationYields.sorted()) "
-               + "across \(scannedActivationFiles) scanned files")
         suite.expect(DockClickSupport.action(appIsFrontmost: true,
                                        hasUnminimizedWindows: false,
                                        hasMinimizedWindows: true,

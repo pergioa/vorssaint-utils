@@ -12,12 +12,139 @@ import ImageIO
 import VMStatisticsCompat
 
 enum RepositoryFeatureTests {
+    private struct SourceRead: Sendable {
+        let path: String
+        let source: String?
+        let lines: [String]
+        let error: String?
+    }
+
+    private final class SourceReadCollector: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reads: [SourceRead] = []
+
+        func append(contentsOf batch: [SourceRead]) {
+            lock.withLock { reads.append(contentsOf: batch) }
+        }
+
+        func sortedReads() -> [SourceRead] {
+            lock.withLock { reads.sorted { $0.path < $1.path } }
+        }
+    }
+
+    private struct RepositorySnapshot {
+        let swiftPaths: [String]
+        let swiftSources: [String: String]
+        let swiftLines: [String: [String]]
+        let enumerationError: String?
+        let unreadablePaths: [String]
+        let emptyPaths: [String]
+
+        init(fileManager: FileManager = .default) {
+            let paths: [String]
+            var traversalError: String?
+            do {
+                paths = Array(Set(try fileManager.subpathsOfDirectory(atPath: "Sources")
+                    .filter { $0.hasSuffix(".swift") }
+                    .map { "Sources/" + $0 })).sorted()
+            } catch {
+                paths = []
+                traversalError = String(describing: error)
+            }
+
+            let workerCount = min(paths.count, max(1, min(8, ProcessInfo.processInfo.activeProcessorCount)))
+            let collector = SourceReadCollector()
+            let queue = OperationQueue()
+            queue.name = "RepositorySnapshot.SourceReads"
+            queue.qualityOfService = .userInitiated
+            queue.maxConcurrentOperationCount = max(1, workerCount)
+            let operations = (0..<workerCount).map { workerIndex in
+                BlockOperation {
+                    var batch: [SourceRead] = []
+                    batch.reserveCapacity((paths.count + workerCount - 1) / workerCount)
+                    for index in stride(from: workerIndex, to: paths.count, by: workerCount) {
+                        let path = paths[index]
+                        do {
+                            let source = try String(contentsOfFile: path, encoding: .utf8)
+                            batch.append(SourceRead(path: path, source: source,
+                                                   lines: source.components(separatedBy: "\n"),
+                                                   error: nil))
+                        } catch {
+                            batch.append(SourceRead(path: path, source: nil, lines: [],
+                                                   error: String(describing: error)))
+                        }
+                    }
+                    collector.append(contentsOf: batch)
+                }
+            }
+            queue.addOperations(operations, waitUntilFinished: true)
+
+            let reads = collector.sortedReads()
+            let sources = Dictionary(uniqueKeysWithValues: reads.compactMap { read in
+                read.source.map { (read.path, $0) }
+            })
+            let lines = Dictionary(uniqueKeysWithValues: reads.compactMap { read in
+                read.source.map { _ in (read.path, read.lines) }
+            })
+
+            swiftPaths = paths
+            swiftSources = sources
+            swiftLines = lines
+            enumerationError = traversalError
+            unreadablePaths = reads.compactMap { read in
+                read.error.map { "\(read.path): \($0)" }
+            }
+            emptyPaths = reads.compactMap { read in
+                guard let source = read.source,
+                      source.rangeOfCharacter(from: .whitespacesAndNewlines.inverted) == nil else { return nil }
+                return read.path
+            }
+        }
+
+        func source(at path: String) -> String {
+            swiftSources[path] ?? ""
+        }
+
+        func lines(at path: String) -> [String] {
+            swiftLines[path] ?? []
+        }
+    }
+
     static func run(_ suite: TestSuite) {
         func expectEqual(_ actual: String, _ expected: String, _ label: String,
                          file: StaticString = #filePath, line: UInt = #line) {
             suite.expect(actual == expected, "\(label): got \(actual), expected \(expected)",
                          file: file, line: line)
         }
+        let repository = RepositorySnapshot()
+        suite.expect(repository.enumerationError == nil,
+               "the Swift source corpus is enumerable: \(repository.enumerationError ?? "")")
+        suite.expect(!repository.swiftPaths.isEmpty,
+               "the Swift source corpus contains files")
+        suite.expect(repository.unreadablePaths.isEmpty,
+               "every Swift source is readable: \(repository.unreadablePaths)")
+        suite.expect(repository.emptyPaths.isEmpty,
+               "no Swift source is empty: \(repository.emptyPaths)")
+        let requiredSourcePaths = [
+            "Sources/Vorssaint/Services/CommandBar/CommandBarSupport.swift",
+            "Sources/Vorssaint/Services/Homebrew/HomebrewManager.swift",
+            "Sources/Vorssaint/Services/Metrics/DiskSampler.swift",
+            "Sources/Vorssaint/Services/QuickTools/RecentCaptureService.swift",
+            "Sources/Vorssaint/Services/QuickTools/RecentCaptureStore.swift",
+            "Sources/Vorssaint/Services/SelfUninstall.swift",
+            "Sources/Vorssaint/Services/Shelf/ShelfService.swift",
+            "Sources/Vorssaint/Support/Uninstaller.swift",
+            "Sources/Vorssaint/UI/Settings/URLCleanerSettings.swift",
+            "Sources/Vorssaint/UI/Theme.swift",
+        ]
+        let missingSourcePaths = requiredSourcePaths.filter {
+            repository.swiftSources[$0] == nil
+        }
+        suite.expect(missingSourcePaths.isEmpty,
+               "every directly inspected Swift source is present: \(missingSourcePaths)")
+        let buildScript = (try? String(contentsOfFile: "build.sh", encoding: .utf8)) ?? ""
+        suite.expect(!buildScript.isEmpty, "build.sh is readable for repository contracts")
+
         // MARK: URL cleaning
 
         expectEqual(URLCleaning.clean("https://example.com/path?utm_source=news&id=42&fbclid=abc")?.url ?? "",
@@ -46,9 +173,8 @@ enum RepositoryFeatureTests {
         // left every field on the right half of its row. The hint has to
         // travel as `prompt:` and the label has to be hidden for a field to
         // own its whole row.
-        let urlCleanerSettingsSource = (try? String(
-            contentsOfFile: "Sources/Vorssaint/UI/Settings/URLCleanerSettings.swift",
-            encoding: .utf8)) ?? ""
+        let urlCleanerSettingsSource = repository.source(
+            at: "Sources/Vorssaint/UI/Settings/URLCleanerSettings.swift")
         suite.expect(!urlCleanerSettingsSource.contains("TextField(l10n.s."),
                "no Clean URL field spends its row on a label instead of the field")
         suite.expect(urlCleanerSettingsSource.components(separatedBy: "TextField(").count
@@ -156,9 +282,8 @@ enum RepositoryFeatureTests {
 
         // MARK: Homebrew command building and parsing
 
-        let homebrewManagerSource = (try? String(
-            contentsOfFile: "Sources/Vorssaint/Services/Homebrew/HomebrewManager.swift",
-            encoding: .utf8)) ?? ""
+        let homebrewManagerSource = repository.source(
+            at: "Sources/Vorssaint/Services/Homebrew/HomebrewManager.swift")
         let homebrewRunStreaming = homebrewManagerSource.components(separatedBy: "func runStreaming(")
             .dropFirst().first?.components(separatedBy: "private func appendLog").first ?? ""
         suite.expect(homebrewRunStreaming.contains("brewSilenceTimeout")
@@ -224,9 +349,7 @@ enum RepositoryFeatureTests {
         // did none of it, so the installed and outdated lists have to be re-read
         // after a failed operation too. Read from the source: the refresh happens
         // inside a completion closure that no unit test can drive.
-        let managerSource = (try? String(
-            contentsOfFile: "Sources/Vorssaint/Services/Homebrew/HomebrewManager.swift",
-            encoding: .utf8)) ?? ""
+        let managerSource = homebrewManagerSource
         suite.expect(!managerSource.isEmpty, "HomebrewManager source is readable for the refresh checks")
         let managerCode = managerSource
             .split(separator: "\n", omittingEmptySubsequences: false)
@@ -502,6 +625,434 @@ enum RepositoryFeatureTests {
         suite.expect(rankedPackages.first?.popularity?.compactCount == "42K",
                "Homebrew search results keep compact popularity")
 
+        // MARK: Repository-wide source contracts
+
+        // Reading a file is not a drawing step. The watermark logo was being
+        // decoded inside the preview's body, so every frame of an opacity
+        // drag re-read it from disk; it is loaded once per chosen file now,
+        // which is what a task is for.
+        let uiPrefix = "Sources/Vorssaint/UI/"
+        let allUIFiles = repository.swiftPaths.filter { $0.hasPrefix(uiPrefix) }
+        var decodingInBody: [String] = []
+        for path in allUIFiles {
+            let lines = repository.lines(at: path)
+            for (index, line) in lines.enumerated() {
+                let reads = line.contains("NSImage(contentsOfFile:")
+                    || line.contains("Data(contentsOf:")
+                guard reads else { continue }
+                let around = lines[max(0, index - 6)...min(lines.count - 1, index + 2)]
+                if !around.contains(where: { $0.contains(".task(") || $0.contains("func ")
+                                             || $0.contains("Task {") }) {
+                    decodingInBody.append("\(path):\(index + 1)")
+                }
+            }
+        }
+        suite.expect(decodingInBody.isEmpty,
+               "a view reads a file once, never while drawing (\(decodingInBody.joined(separator: ", ")))")
+
+        // An unpinned borderless Menu claims the free width of its row on
+        // macOS 15 and starves whatever shares that row (issue #569), so the
+        // rule is checked for every borderless menu in the app rather than for
+        // the one this fix touches. Kill Process is the one deliberate
+        // exception: its row controls take a shared minimum width so the Kill
+        // button and the menu beside it line up down the list.
+        let borderlessMenuException = "KillProcess/KillProcessView"
+        var unpinnedBorderlessMenus: [String] = []
+        let uiFiles = allUIFiles.filter { !$0.contains(" 2") }
+        for path in uiFiles where !path.contains(borderlessMenuException) {
+            let file = String(path.dropFirst(uiPrefix.count))
+            let lines = repository.lines(at: path)
+            for (index, line) in lines.enumerated()
+            where line.contains(".menuStyle(.borderlessButton)") {
+                // Read to the end of the menu's own modifier chain: the next
+                // line that is neither a modifier nor a comment belongs to
+                // something else.
+                var pinned = false
+                var cursor = index + 1
+                while cursor < lines.count {
+                    let text = lines[cursor].trimmingCharacters(in: .whitespaces)
+                    guard text.hasPrefix(".") || text.hasPrefix("//") else { break }
+                    if text.hasPrefix(".fixedSize()") { pinned = true; break }
+                    cursor += 1
+                }
+                if !pinned { unpinnedBorderlessMenus.append("\(file):\(index + 1)") }
+            }
+        }
+        suite.expect(!uiFiles.isEmpty && unpinnedBorderlessMenus.isEmpty,
+               "every borderless menu keeps its own size, across \(uiFiles.count) "
+               + "scanned files: \(unpinnedBorderlessMenus)")
+
+        // `waitUntilAllOperationsAreFinished` has no deadline, and the window
+        // walk that used it runs on the main thread while its operations run on
+        // the shared dispatch pool. Once unrelated work had taken every worker
+        // in that pool, not one operation started and the wait never returned,
+        // taking the whole app with it (issue #971).
+        let appPrefix = "Sources/Vorssaint/"
+        let appSources = repository.swiftPaths.filter {
+            $0.hasPrefix(appPrefix) && !$0.contains(" 2")
+        }
+        var unboundedOperationWaits: [String] = []
+        for path in appSources {
+            let file = String(path.dropFirst(appPrefix.count))
+            for (index, line) in repository.lines(at: path).enumerated()
+            where line.contains("waitUntilAllOperationsAreFinished") {
+                unboundedOperationWaits.append("\(file):\(index + 1)")
+            }
+        }
+        suite.expect(!appSources.isEmpty && unboundedOperationWaits.isEmpty,
+               "no operation queue is waited on without a deadline: \(unboundedOperationWaits)")
+
+        // Asking an application element for its role switches a Chromium app's
+        // renderers into full accessibility mode for the rest of the process's
+        // life. Both scans report real line numbers, so comments are excluded
+        // in the predicate rather than removed from the source.
+        func isCommentLine(_ line: String) -> Bool {
+            line.trimmingCharacters(in: .whitespaces).hasPrefix("//")
+        }
+        var applicationRoleReads: [String] = []
+        for path in appSources {
+            let file = String(path.dropFirst(appPrefix.count))
+            let lines = repository.lines(at: path)
+            var applicationElements: Set<String> = []
+            for line in lines where line.contains("AXUIElementCreateApplication(") {
+                let assigned = (line.components(separatedBy: "=").first ?? "")
+                    .trimmingCharacters(in: .whitespaces)
+                    .components(separatedBy: " ")
+                guard assigned.count == 2, assigned[0] == "let" || assigned[0] == "var" else { continue }
+                applicationElements.insert(assigned[1])
+            }
+            for (index, line) in lines.enumerated()
+            where line.contains("kAXRoleAttribute")
+                && !isCommentLine(line)
+                && applicationElements.contains(where: { line.contains("(\($0), ") }) {
+                applicationRoleReads.append("\(file):\(index + 1)")
+            }
+        }
+        suite.expect(!appSources.isEmpty && applicationRoleReads.isEmpty,
+               "no application element is ever asked for its role: \(applicationRoleReads)")
+
+        // A walk up kAXParent reaches an application element without naming it,
+        // so every such walk must stop before asking that parent for its role.
+        var unguardedParentWalks: [String] = []
+        for path in appSources {
+            let file = String(path.dropFirst(appPrefix.count))
+            let lines = repository.lines(at: path)
+            for (index, line) in lines.enumerated()
+            where line.contains("role(of: parent)") && !isCommentLine(line) {
+                let guarded = lines[max(0, index - 3)..<index]
+                    .contains { $0.contains("isApplicationElement(parent)") && !isCommentLine($0) }
+                if !guarded { unguardedParentWalks.append("\(file):\(index + 1)") }
+            }
+        }
+        suite.expect(!appSources.isEmpty && unguardedParentWalks.isEmpty,
+               "a walk up the parent chain stops at the application element: \(unguardedParentWalks)")
+
+        // Availability is only ever written by the runtime that gates it, so a
+        // new install surface cannot walk around the hardware check.
+        var availabilityWriters: Set<String> = []
+        for path in repository.swiftPaths {
+            let writes = repository.lines(at: path).contains {
+                $0.contains(".set(") && $0.contains("availabilityKey")
+            }
+            if writes { availabilityWriters.insert((path as NSString).lastPathComponent) }
+        }
+        suite.expect(availabilityWriters == ["FeatureRuntime.swift",
+                                       "FeaturePresets.swift",
+                                       "Defaults.swift"],
+               "feature availability is written only where the hardware gate runs, "
+               + "found \(availabilityWriters.sorted())")
+
+        // A saved shelf may only be read through the loader that distinguishes
+        // an unreadable or partial store from a valid empty one.
+        let rawShelfStoreDecoders = repository.swiftPaths.compactMap { path in
+            repository.source(at: path).contains("decode([ShelfPersistedItem]")
+                ? (path as NSString).lastPathComponent : nil
+        }
+        suite.expect(!repository.swiftPaths.isEmpty && rawShelfStoreDecoders.isEmpty,
+               "the saved shelf is read only through ShelfPersistenceSupport.load, "
+               + "found a bare decode in \(rawShelfStoreDecoders.sorted()) "
+               + "across \(repository.swiftPaths.count) scanned files")
+
+        var bareActivationYields: [String] = []
+        for path in repository.swiftPaths
+        where (path as NSString).lastPathComponent != "ActivationHandoff.swift"
+            && repository.source(at: path).contains("yieldActivation") {
+            bareActivationYields.append((path as NSString).lastPathComponent)
+        }
+        suite.expect(!repository.swiftPaths.isEmpty && bareActivationYields.isEmpty,
+               "activation is yielded only through ActivationHandoff, "
+               + "found a bare yield in \(bareActivationYields.sorted()) "
+               + "across \(repository.swiftPaths.count) scanned files")
+
+        // Dropping the last Swift reference does not deregister an event tap;
+        // every literal tap creation needs a matching invalidation or removal.
+        var tapOwnersWithoutInvalidate: [String] = []
+        var tapOwners = 0
+        for path in appSources {
+            let code = repository.lines(at: path)
+                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+                .joined(separator: "\n")
+            let taps = code.components(separatedBy: "CGEvent.tapCreate").count - 1
+            guard taps > 0 else { continue }
+            tapOwners += 1
+            let invalidations = code.components(separatedBy: "CFMachPortInvalidate").count - 1
+                + (code.components(separatedBy: "PointerTapRunLoop.remove(").count - 1)
+            if invalidations < taps {
+                let file = String(path.dropFirst(appPrefix.count))
+                tapOwnersWithoutInvalidate.append("\(file) (\(taps) taps, \(invalidations) invalidated)")
+            }
+        }
+        suite.expect(tapOwners > 0 && tapOwnersWithoutInvalidate.isEmpty,
+               "every event tap owner invalidates its port on teardown, across "
+               + "\(tapOwners) scanned owners: \(tapOwnersWithoutInvalidate)")
+
+        // MARK: Localization source contracts
+
+        // Visible localization source uses typographic apostrophes rather than
+        // typewriter marks.
+        let localizationSourcePaths = repository.swiftPaths.filter { path in
+            let folder = (path as NSString).deletingLastPathComponent
+            let name = (path as NSString).lastPathComponent
+            return (folder == "Sources/Vorssaint/Core"
+                    || folder == "Sources/Vorssaint/Core/Localizations")
+                && (name.hasSuffix("Strings.swift") || name.hasPrefix("Strings+")
+                    || name == "Localization.swift")
+        }
+        var typewriterMarks: [String] = []
+        for path in localizationSourcePaths {
+            for (index, line) in repository.lines(at: path).enumerated() {
+                guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { continue }
+                guard let opening = line.firstIndex(of: "\""),
+                      let closing = line.lastIndex(of: "\""), opening < closing else { continue }
+                if line[opening..<closing].contains("'") {
+                    typewriterMarks.append("\(path):\(index + 1)")
+                }
+            }
+        }
+        suite.expect(typewriterMarks.isEmpty,
+               "visible text curls its apostrophes (\(typewriterMarks.prefix(6).joined(separator: ", ")))")
+
+        // French double punctuation and guillemets use non-breaking spaces.
+        func frenchLines(_ path: String) -> ArraySlice<String> {
+            let lines = repository.lines(at: path)
+            guard !path.hasSuffix("Strings+French.swift") else { return lines[...] }
+            guard let start = lines.firstIndex(where: {
+                $0.trimmingCharacters(in: .whitespaces).hasPrefix("static let fr = ")
+            }) else { return [][...] }
+            let end = lines[(start + 1)...].firstIndex {
+                $0.trimmingCharacters(in: .whitespaces).hasPrefix("static let ")
+            } ?? lines.endIndex
+            return lines[start..<end]
+        }
+        let frenchSources = repository.swiftPaths.filter { path in
+            path == "Sources/Vorssaint/Core/Localizations/Strings+French.swift"
+                || ((path as NSString).deletingLastPathComponent == "Sources/Vorssaint/Core"
+                    && path.hasSuffix("Strings.swift"))
+        }
+        var breakingFrench: [String] = []
+        for path in frenchSources {
+            for line in frenchLines(path) {
+                guard !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") else { continue }
+                guard let opening = line.firstIndex(of: "\""),
+                      let closing = line.lastIndex(of: "\""), opening < closing else { continue }
+                let body = String(line[line.index(after: opening)..<closing])
+                let breaks = [" ;", " :", " !", " ?", " \u{00BB}", "\u{00AB} "]
+                if breaks.contains(where: { body.contains($0) }) {
+                    breakingFrench.append((path as NSString).lastPathComponent)
+                }
+            }
+        }
+        suite.expect(breakingFrench.isEmpty,
+               "French keeps its punctuation on the line it belongs to (\(Set(breakingFrench).sorted().prefix(4).joined(separator: ", ")))")
+
+        let themeSource = repository.source(at: "Sources/Vorssaint/UI/Theme.swift")
+        let raisedReads = themeSource
+            .components(separatedBy: "accessibilityDisplayShouldIncreaseContrast").count - 1
+        suite.expect(raisedReads == 2,
+               "both panel outlines answer raised contrast, and nothing else pretends to")
+
+        // Every formatted decimal explicitly chooses its locale. Long calls
+        // may put that locale on either of the next two lines.
+        var regionlessDecimals: [String] = []
+        for path in repository.swiftPaths {
+            let lines = repository.lines(at: path)
+            for (index, line) in lines.enumerated() {
+                let statement = lines[index...min(index + 2, lines.count - 1)].joined()
+                guard line.contains("String(format:"), !statement.contains("locale:") else { continue }
+                let piece = line.components(separatedBy: "String(format:").dropFirst().first ?? ""
+                let format = piece.components(separatedBy: "\"").dropFirst().first ?? ""
+                if format.contains("f") && format.contains("%") {
+                    regionlessDecimals.append("\(path):\(index + 1)")
+                }
+            }
+        }
+        suite.expect(regionlessDecimals.isEmpty,
+               "a decimal on screen names its region (\(regionlessDecimals.joined(separator: ", ")))")
+
+        // Purgeable space is queried only for writable volumes.
+        let samplerCode = repository.lines(
+            at: "Sources/Vorssaint/Services/Metrics/DiskSampler.swift")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        suite.expect(!samplerCode.isEmpty, "the disk sampler reads back for its shape check")
+        let bulkKeys = samplerCode.components(separatedBy: "let keys: Set<URLResourceKey>")
+            .dropFirst().first?.components(separatedBy: "]").first ?? ""
+        suite.expect(!bulkKeys.contains("volumeAvailableCapacityForImportantUsageKey")
+                && bulkKeys.contains("volumeIsReadOnlyKey"),
+               "the bulk volume fetch asks nothing that only a writable volume can answer")
+        suite.expect(samplerCode.contains("guard !isReadOnly,"),
+               "purgeable space is read only where there is something to purge")
+
+        // Only localized fields that reach String(format:) need matching
+        // placeholders in every language.
+        var formatFields: Set<String> = []
+        for path in repository.swiftPaths {
+            for piece in repository.source(at: path).components(separatedBy: "String(format:").dropFirst() {
+                let head = piece.prefix(120)
+                guard let comma = head.firstIndex(of: ",") else { continue }
+                let expression = head[head.startIndex..<comma]
+                guard let dot = expression.lastIndex(of: ".") else { continue }
+                let name = expression[expression.index(after: dot)...]
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber }) {
+                    formatFields.insert(name)
+                }
+            }
+        }
+        suite.expect(formatFields.count > 10, "the format fields were found to compare (\(formatFields.count))")
+        var mismatched: [String] = []
+        for (language, strings) in LocalizationTests.languages where language != .enUS {
+            let mine = Mirror(reflecting: strings).children
+            let base = Mirror(reflecting: Strings.enUS).children
+            for (left, right) in zip(base, mine) {
+                guard let label = left.label, formatFields.contains(label),
+                      let english = left.value as? String,
+                      let other = right.value as? String else { continue }
+                if TestFormat.parse(english) == nil
+                    || TestFormat.parse(english)?.arguments != TestFormat.parse(other)?.arguments {
+                    mismatched.append("\(label)/\(language.rawValue)")
+                }
+            }
+        }
+        suite.expect(mismatched.isEmpty,
+               "every language fills a format the same way (\(mismatched.prefix(5).joined(separator: ", ")))")
+
+        // Every literal SF Symbol name resolves on the test system.
+        var symbolNames: Set<String> = []
+        for path in repository.swiftPaths {
+            for piece in repository.source(at: path).components(separatedBy: "systemName: \"").dropFirst() {
+                guard let end = piece.firstIndex(of: "\"") else { continue }
+                let name = String(piece[piece.startIndex..<end])
+                if !name.isEmpty, !name.contains("\\") { symbolNames.insert(name) }
+            }
+        }
+        suite.expect(symbolNames.count > 80, "the symbol names were found (\(symbolNames.count))")
+        var missingSymbols: [String] = []
+        for name in symbolNames.sorted()
+        where NSImage(systemSymbolName: name, accessibilityDescription: nil) == nil {
+            missingSymbols.append(name)
+        }
+        suite.expect(missingSymbols.isEmpty,
+               "every symbol the app draws exists (\(missingSymbols.joined(separator: ", ")))")
+
+        // Every literal resource name requested by Swift is shipped or staged
+        // by the build.
+        var namedResources: Set<String> = []
+        for path in repository.swiftPaths {
+            let text = repository.source(at: path)
+            for marker in ["url(forResource: \"", "path(forResource: \"", "NSImage(named: \""] {
+                for piece in text.components(separatedBy: marker).dropFirst() {
+                    guard let end = piece.firstIndex(of: "\"") else { continue }
+                    let name = String(piece[piece.startIndex..<end])
+                    if !name.isEmpty, !name.contains("\\") { namedResources.insert(name) }
+                }
+            }
+        }
+        suite.expect(namedResources.count >= 5, "the named resources were found (\(namedResources.count))")
+        var shippedNames: Set<String> = []
+        for path in (try? FileManager.default.subpathsOfDirectory(atPath: "Resources")) ?? [] {
+            let file = (path as NSString).lastPathComponent
+            shippedNames.insert((file as NSString).deletingPathExtension)
+            shippedNames.insert(file)
+        }
+        suite.expect(!buildScript.isEmpty, "the build script reads back for its resource names")
+        for word in buildScript.components(separatedBy: CharacterSet(charactersIn: " \n\t\"'()")) {
+            let file = (word as NSString).lastPathComponent
+            guard !file.isEmpty else { continue }
+            shippedNames.insert((file as NSString).deletingPathExtension)
+            shippedNames.insert(file)
+        }
+        shippedNames.insert("CHANGELOG")
+        let absentResources = namedResources.filter { !shippedNames.contains($0) }.sorted()
+        suite.expect(absentResources.isEmpty,
+               "every file the app asks for by name is in the bundle (\(absentResources.joined(separator: ", ")))")
+
+        // Embedded Finder scripts are compiled only when they run, so verify
+        // that every multiline tell/repeat block balances here.
+        var unbalancedScripts: [String] = []
+        for path in repository.swiftPaths {
+            let text = repository.source(at: path)
+            for chunk in text.components(separatedBy: "\"\"\"").enumerated()
+            where chunk.offset % 2 == 1 && chunk.element.contains("tell application") {
+                let body = chunk.element.components(separatedBy: "\n")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                func opens(_ word: String, closing: String, inline: (String) -> Bool) -> Bool {
+                    let started = body.filter { $0.hasPrefix(word + " ") && !inline($0) }.count
+                    let ended = body.filter { $0 == closing }.count
+                    return started != ended
+                }
+                let name = (path as NSString).lastPathComponent
+                if opens("tell", closing: "end tell", inline: { $0.contains(" to ") }) {
+                    unbalancedScripts.append("\(name):tell")
+                }
+                if opens("repeat", closing: "end repeat", inline: { _ in false }) {
+                    unbalancedScripts.append("\(name):repeat")
+                }
+            }
+        }
+        suite.expect(unbalancedScripts.isEmpty,
+               "every embedded script closes what it opens (\(unbalancedScripts.joined(separator: ", ")))")
+
+        // Absolute command-line tool paths embedded in Swift must exist.
+        var toolPaths: Set<String> = []
+        for path in repository.swiftPaths {
+            for piece in repository.source(at: path).components(separatedBy: "\"/").dropFirst() {
+                guard let end = piece.firstIndex(of: "\"") else { continue }
+                let candidate = "/" + piece[piece.startIndex..<end]
+                guard candidate.hasPrefix("/bin/") || candidate.hasPrefix("/usr/bin/")
+                        || candidate.hasPrefix("/usr/sbin/") else { continue }
+                guard !candidate.contains(" "), !candidate.contains("\\") else { continue }
+                toolPaths.insert(candidate)
+            }
+        }
+        suite.expect(toolPaths.count >= 15, "the system tools were found (\(toolPaths.count))")
+        let missingTools = toolPaths.sorted().filter {
+            !FileManager.default.fileExists(atPath: $0)
+        }
+        suite.expect(missingTools.isEmpty,
+               "every system tool the app runs is where it expects (\(missingTools.joined(separator: ", ")))")
+
+        // User-file stores delete only paths whose ownership is established in
+        // the local scope immediately before removal.
+        var ungardedDeletes: [String] = []
+        let ownershipGuards = ["isShelfOwnedFile", "discardablePaths", "ownedPayloadURLs",
+                               "isRegularFile", "tempDir", "legacyDir", "root", "uuidString",
+                               "storeRoot", "contentsOfDirectory"]
+        for path in ["Sources/Vorssaint/Services/Shelf/ShelfService.swift",
+                     "Sources/Vorssaint/Services/QuickTools/RecentCaptureService.swift",
+                     "Sources/Vorssaint/Services/QuickTools/RecentCaptureStore.swift"] {
+            let lines = repository.lines(at: path)
+            suite.expect(!lines.isEmpty, "the store source reads back for its deletion check")
+            for (index, line) in lines.enumerated() where line.contains("removeItem(at:") {
+                let scope = lines[max(0, index - 10)...index].joined(separator: "\n")
+                if !ownershipGuards.contains(where: scope.contains) {
+                    ungardedDeletes.append("\((path as NSString).lastPathComponent):\(index + 1)")
+                }
+            }
+        }
+        suite.expect(ungardedDeletes.isEmpty,
+               "a file is deleted only after the app checks it owns it (\(ungardedDeletes.joined(separator: ", ")))")
+
         // MARK: Result
 
         // MARK: Every defaults suite stays inside a namespace build.sh sweeps
@@ -518,7 +1069,6 @@ enum RepositoryFeatureTests {
         suite.expect(!testSource.isEmpty, "the test file reads back for its own source checks")
         // The prefixes are read out of the sweep itself, so the check and the
         // thing it guards cannot drift apart.
-        let buildScript = (try? String(contentsOfFile: "build.sh", encoding: .utf8)) ?? ""
         let sweepBody = buildScript.components(separatedBy: "discard_test_preferences() {")
             .dropFirst().first?.components(separatedBy: "\n}").first ?? ""
         let sweptNamespaces = sweepBody.components(separatedBy: "\"")
@@ -639,15 +1189,14 @@ enum RepositoryFeatureTests {
         }
 
         // MARK: Uninstallation paths stay aligned across SelfUninstall and Tools/uninstall.sh
-        let selfUninstallSource = (try? String(contentsOfFile: "Sources/Vorssaint/Services/SelfUninstall.swift",
-                                              encoding: .utf8)) ?? ""
+        let selfUninstallSource = repository.source(
+            at: "Sources/Vorssaint/Services/SelfUninstall.swift")
         let uninstallScriptSource = (try? String(contentsOfFile: "Tools/uninstall.sh",
                                                 encoding: .utf8)) ?? ""
         suite.expect(!selfUninstallSource.isEmpty && !uninstallScriptSource.isEmpty,
                "uninstall sources read back for uninstallation alignment check")
-        let queryHabitSupportSource = (try? String(
-            contentsOfFile: "Sources/Vorssaint/Services/CommandBar/CommandBarSupport.swift",
-            encoding: .utf8)) ?? ""
+        let queryHabitSupportSource = repository.source(
+            at: "Sources/Vorssaint/Services/CommandBar/CommandBarSupport.swift")
         suite.expect(selfUninstallSource.contains("CommandBarQueryHabits.removeInstallationKey()")
                 && queryHabitSupportSource.contains("installationKeyCache.stopAndRemove {")
                 && queryHabitSupportSource.contains("SecItemDelete([")
@@ -671,8 +1220,8 @@ enum RepositoryFeatureTests {
         // removal deletes the flag that launch-time recovery reads before it
         // reads the setting, so nothing repairs it afterwards — a reinstall
         // included.
-        let uninstallerSource = (try? String(contentsOfFile: "Sources/Vorssaint/Support/Uninstaller.swift",
-                                             encoding: .utf8)) ?? ""
+        let uninstallerSource = repository.source(
+            at: "Sources/Vorssaint/Support/Uninstaller.swift")
         suite.expect(!uninstallerSource.isEmpty,
                "uninstaller entry point reads back for the sleep restore check")
         suite.expect(!selfUninstallSource.contains("_ = Sudoers.pmsetDisableSleep")

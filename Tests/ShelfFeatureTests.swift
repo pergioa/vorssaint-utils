@@ -725,29 +725,5 @@ enum ShelfFeatureTests {
                 && pastRestoreGuard[1].contains("sweepOwnedFiles("),
                "restore sweeps the shelf's payload files only for a store it read whole")
 
-        // Guards the class, not the one instance that emptied shelves: the
-        // saved blob may only be read through `load`, which hands the caller a
-        // `.unreadable` case it has to answer for. A bare array decode brings
-        // back the all-or-nothing form, where any single bad entry restores an
-        // empty shelf that is then written back over the real one.
-        // The scan has to report how many files it read: an enumerator that
-        // finds nothing (the tests run from somewhere other than the repo
-        // root) leaves the list empty, and a rule checked against no files at
-        // all passes while guarding nothing.
-        var rawShelfStoreDecoders: [String] = []
-        var scannedShelfStoreFiles = 0
-        if let sources = FileManager.default.enumerator(atPath: "Sources") {
-            for case let path as String in sources where path.hasSuffix(".swift") {
-                let text = (try? String(contentsOfFile: "Sources/" + path, encoding: .utf8)) ?? ""
-                scannedShelfStoreFiles += 1
-                if text.contains("decode([ShelfPersistedItem]") {
-                    rawShelfStoreDecoders.append((path as NSString).lastPathComponent)
-                }
-            }
-        }
-        suite.expect(scannedShelfStoreFiles > 0 && rawShelfStoreDecoders.isEmpty,
-               "the saved shelf is read only through ShelfPersistenceSupport.load, "
-               + "found a bare decode in \(rawShelfStoreDecoders.sorted()) "
-               + "across \(scannedShelfStoreFiles) scanned files")
     }
 }

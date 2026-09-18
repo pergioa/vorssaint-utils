@@ -2900,46 +2900,6 @@ enum PointerInputFeatureTests {
                    "\(pointerTapOwner) keeps its tap off the main run loop")
         }
 
-        // Disabling a tap and dropping the last Swift reference does not hand
-        // the port back: CGGetEventTapList still reports the tap against this
-        // process, one more per start/stop cycle, for the life of the process.
-        // Only CFMachPortInvalidate deregisters it. Counted per tap rather than
-        // per file, because BrightnessService and SuperKeyService own two taps
-        // each and WindowLayoutService three, and on comment-stripped source,
-        // as in the per-service check above, so prose naming the API cannot
-        // answer for a missing call. A margin does not cover a tap added later:
-        // MouseClickDebounceService's two invalidations are both on its one
-        // tap. The owners reached are counted too, because a file with no
-        // literal CGEvent.tapCreate is skipped, so moving the call behind a
-        // helper would otherwise leave a sweep that passes having read nothing.
-        var tapOwnersWithoutInvalidate: [String] = []
-        var tapOwners = 0
-        let tapOwnerSources = FileManager.default
-            .enumerator(atPath: "Sources/Vorssaint")?
-            .compactMap { $0 as? String }
-            .filter { $0.hasSuffix(".swift") && !$0.contains(" 2") } ?? []
-        for file in tapOwnerSources.sorted() {
-            guard let source = try? String(contentsOfFile: "Sources/Vorssaint/\(file)",
-                                           encoding: .utf8) else { continue }
-            let code = source.components(separatedBy: "\n")
-                .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
-                .joined(separator: "\n")
-            let taps = code.components(separatedBy: "CGEvent.tapCreate").count - 1
-            guard taps > 0 else { continue }
-            tapOwners += 1
-            // A tap served by the pointer thread is handed back there, which
-            // is the same promise: `PointerTapRunLoop.remove` invalidates the
-            // port it is given, and the sweep above pins that it does.
-            let invalidations = code.components(separatedBy: "CFMachPortInvalidate").count - 1
-                + (code.components(separatedBy: "PointerTapRunLoop.remove(").count - 1)
-            if invalidations < taps {
-                tapOwnersWithoutInvalidate.append("\(file) (\(taps) taps, \(invalidations) invalidated)")
-            }
-        }
-        suite.expect(tapOwners > 0 && tapOwnersWithoutInvalidate.isEmpty,
-               "every event tap owner invalidates its port on teardown, across "
-               + "\(tapOwners) scanned owners: \(tapOwnersWithoutInvalidate)")
-
         let mouseTapAppDelegateSource = (try? String(
             contentsOfFile: "Sources/Vorssaint/App/AppDelegate.swift",
             encoding: .utf8)) ?? ""
