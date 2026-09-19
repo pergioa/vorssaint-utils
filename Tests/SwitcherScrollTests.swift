@@ -125,6 +125,11 @@ enum SwitcherScrollContract {
                         : SwitcherIconRowLayout.spacing
                     let padding = model.simple ? SwitcherIconRowLayout.simpleTitleScrollPadding : 0
                     let clip = scroll.contentView.bounds
+                    let expectedWidth = model.simple
+                        ? model.iconRowLayout.contentWidth(simpleMode: true, windowRow: false)
+                            - 2 * SwitcherIconRowLayout.simpleTitlePanelPadding
+                        : model.iconRowLayout.previewContentWidth
+                    guard abs(clip.width - expectedWidth) <= 1 else { return false }
                     if !model.simple && appWindows.count == 2 && model.screenWidth >= 800 {
                         return clip.minX <= 0.5 && clip.maxX >= width * 2 + spacing - 0.5
                     }
