@@ -101,8 +101,7 @@ enum SwitcherScrollContract {
                 repeat {
                     hosting.layoutSubtreeIfNeeded()
                     if drainGeneration == 2 && condition() { return }
-                    RunLoop.current.run(mode: .default,
-                                        before: min(deadline, Date().addingTimeInterval(0.001)))
+                    RunLoop.current.run(until: min(deadline, Date().addingTimeInterval(0.012)))
                 } while Date() < deadline
                 hosting.layoutSubtreeIfNeeded()
             }
