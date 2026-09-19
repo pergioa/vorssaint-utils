@@ -9,6 +9,7 @@ enum RecorderWriterTests {
         let finished = DispatchSemaphore(value: 0)
         Task.detached {
             do {
+                try await check(suite)
                 try await check(suite, delayedVideo: true)
                 try await check(suite, delayedVideo: true, capturesAudio: false)
                 try await check(suite, changingMicrophone: true)
