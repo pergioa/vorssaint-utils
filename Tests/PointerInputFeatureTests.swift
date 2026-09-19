@@ -693,6 +693,9 @@ enum PointerInputFeatureTests {
         suite.expect(!focusFollowsMouseServiceSource.isEmpty
                 && !focusFollowsMouseServiceSource.contains("AXUIElementCreateSystemWide"),
                "focus follows mouse cannot re-enter its own Accessibility tree through a global hit test")
+        suite.expect(focusFollowsMouseServiceSource.contains(
+                "!SpaceWindowBridge.isParkedOnHiddenSpace(target.windowID)"),
+               "focus follows mouse never hands a window on a hidden Space to the activator, which would travel")
 
         // A wheel that reports continuously already measures in points, and
         // that field is the one to trust; the line field only fills in for a
@@ -1544,7 +1547,7 @@ enum PointerInputFeatureTests {
         }
 
         let mouseSettingsViewLines = ((try? String(
-            contentsOfFile: "Sources/Vorssaint/UI/Settings/SettingsView.swift",
+            contentsOfFile: "Sources/Vorssaint/UI/Settings/MouseSettings.swift",
             encoding: .utf8)) ?? "").components(separatedBy: "\n")
         let menuPanelLines = ((try? String(
             contentsOfFile: "Sources/Vorssaint/UI/MenuPanel/MenuPanelView.swift",

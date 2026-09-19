@@ -44,7 +44,10 @@ struct MetricsTests {
             ("switcher-model", { SwitcherModelFeatureTests.run(suite) }),
             ("features", { FeatureCatalogTests.run(suite) }),
             ("utilities", { UtilitiesFeatureTests.run(suite) }),
-            ("settings", { SettingsFeatureTests.run(suite) }),
+            ("settings", {
+                SettingsFeatureTests.run(suite)
+                SettingsWindowTests.run { suite.expect($0, $1) }
+            }),
             ("display-restoration", { DisplayRestorationTests.run(suite) }),
             ("software-dimming", { SoftwareDimmingRouteTests.run { suite.expect($0, $1) } }),
             ("capture", { ScreenshotSelectionRefreshContract.run(suite) }),

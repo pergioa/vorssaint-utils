@@ -37,8 +37,8 @@ MUTATIONS = [
      "return min(240, max(112, ceil(max(leading + 18 + 8, trailing)) + 32))", "return 112",
      "power and accessory labels fit beside their icon without truncation"),
     ("device alert window ignores its content width", "notch", "Sources/Vorssaint/Services/Notch/NotchService.swift",
-     "if let notice { return geometry.noticeSize(wingWidth: notice.preferredWingWidth) }",
-     "if notice != nil { return geometry.notice }",
+     "guard noticeExpanded else { return geometry.noticeSize(wingWidth: notice.preferredWingWidth) }",
+     "guard noticeExpanded else { return geometry.notice }",
      "a device notice widens the actual presentation beyond the compact level indicator"),
     ("Nothing loses its music gate", "notch", "Sources/Vorssaint/Services/Notch/NotchSupport.swift",
      "            && idleContent(in: defaults) != .none\n", "",
@@ -119,7 +119,9 @@ MUTATIONS = [
      "                                revealSelection(in: proxy, animated: true)\n"
      "                            }\n"
      "                        }",
-     "",
+     "                        .onChange(of: switcher.iconRowLayout.previewContentWidth) { _, _ in\n"
+     "                            revealSelection(in: proxy, animated: true)\n"
+     "                        }",
      "previews search/narrowed without changing selection"),
     ("switcher loses replacement identity", "switcher", "Sources/Vorssaint/UI/Switcher/SwitcherView.swift",
      "                        .onChange(of: appWindows.map(\\.element.id)) { _, _ in",

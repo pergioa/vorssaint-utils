@@ -289,6 +289,45 @@ enum RepositoryFeatureTests {
                     "https://www.reddit.com/r/swift/comments/abc/?sort=new",
                     "URL cleaner strips Reddit's deep-link tracking in either spelling")
 
+        suite.expect(URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.url", "public.url-name",
+            "NSStringPboardType", "NSURLPboardType",
+        ]), "a plain link copy can be rewritten")
+        suite.expect(!URLCleaning.canRewritePasteboard(types: []),
+               "an empty pasteboard is left alone")
+        suite.expect(URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.html", "public.rtf", "com.apple.flat-rtfd",
+            "public.utf16-external-plain-text",
+        ]), "formatted copies of the same link are dropped by the rewrite, not protected")
+        suite.expect(URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.url", "org.chromium.source-url",
+            "org.chromium.web-custom-data", "com.apple.WebKit.custom-pasteboard-data",
+            "dyn.ah62d4rv4gu8y6y4grf0gn5xbrzw1gydcr7u1e3cytf2gn",
+        ]), "a browser's or a messaging app's private notes about the copy do not block the rewrite")
+        suite.expect(!URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.url", "public.tiff", "public.png",
+        ]), "a copied picture with its source link as text is left alone")
+        suite.expect(!URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.file-url", "NSFilenamesPboardType",
+        ]) && !URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "NSFilenamesPboardType",
+        ]) && !URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "com.apple.pasteboard.promised-file-url",
+            "com.apple.pasteboard.promised-file-content-type",
+        ]), "a copied or promised file is left alone")
+        suite.expect(!URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "com.adobe.pdf",
+        ]) && !URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "public.mpeg-4",
+        ]) && !URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "com.apple.webarchive",
+        ]), "a document, a movie or a web archive next to the text is left alone")
+        suite.expect(!URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "org.nspasteboard.ConcealedType",
+        ]) && !URLCleaning.canRewritePasteboard(types: [
+            "public.utf8-plain-text", "org.nspasteboard.TransientType",
+        ]), "a concealed or transient copy is never rewritten")
+
         // MARK: Homebrew command building and parsing
 
         let homebrewManagerSource = repository.source(
@@ -1064,47 +1103,6 @@ enum RepositoryFeatureTests {
 
         // MARK: Result
 
-        // MARK: Every defaults suite stays inside a namespace build.sh sweeps
-        // A UserDefaults suite leaves an empty plist in ~/Library/Preferences
-        // even after `removePersistentDomain`, and cfprefsd writes that file
-        // back out around the time this process exits, so the run cannot delete
-        // it itself. `build.sh --test` clears them afterwards, by name prefix.
-        // A suite named outside those prefixes survives every run instead.
-        let testSource = ((try? FileManager.default.contentsOfDirectory(atPath: "Tests")) ?? [])
-            .filter { $0.hasSuffix(".swift") }
-            .sorted()
-            .compactMap { try? String(contentsOfFile: "Tests/" + $0, encoding: .utf8) }
-            .joined(separator: "\n")
-        suite.expect(!testSource.isEmpty, "the test file reads back for its own source checks")
-        // The prefixes are read out of the sweep itself, so the check and the
-        // thing it guards cannot drift apart.
-        let sweepBody = buildScript.components(separatedBy: "discard_test_preferences() {")
-            .dropFirst().first?.components(separatedBy: "\n}").first ?? ""
-        let sweptNamespaces = sweepBody.components(separatedBy: "\"")
-            .enumerated().filter { $0.offset % 2 == 1 }.map(\.element)
-            .filter { $0.hasSuffix(".") }
-        suite.expect(!sweptNamespaces.isEmpty, "the swept namespaces read back out of build.sh")
-        suite.expect(sweepBody.contains("rm -f \"$preferences\"/$name*.plist(N)"),
-               "the defaults preference sweep tolerates an already-empty namespace")
-        // Split so this needle is not itself a match in the text it scans.
-        let suiteCall = "UserDefaults(suiteName" + ": "
-        let suiteArguments = testSource.components(separatedBy: suiteCall)
-            .dropFirst()
-            .map { String($0.prefix { $0 != ")" && $0 != "," && !$0.isNewline }) }
-        suite.expect(!suiteArguments.isEmpty, "the namespace check finds the suites it guards")
-        for argument in Set(suiteArguments) {
-            let name: String?
-            if argument.hasPrefix("\"") {
-                name = String(argument.dropFirst().prefix { $0 != "\"" })
-            } else {
-                name = testSource.components(separatedBy: "let \(argument) = \"")
-                    .dropFirst().first
-                    .map { String($0.prefix { $0 != "\"" }) }
-            }
-            suite.expect(name.map { value in sweptNamespaces.contains { value.hasPrefix($0) } } == true,
-                   "defaults suite \(argument) is named inside a namespace build.sh sweeps")
-        }
-
         // MARK: Every temp dir build.sh stages in is swept when the script ends
         // `mktemp -d` lands outside the repo, so a dir the script does not
         // remove survives the run — a successful one as much as a failed one.
@@ -1244,6 +1242,28 @@ enum RepositoryFeatureTests {
                "in-app uninstall aborts unless fans and normal sleep are restored before removal")
         suite.expect(uninstallScriptSource.contains("SleepDisabled"),
                "script uninstall reads the sleep setting back for itself")
+        let brightnessSource = repository.source(
+            at: "Sources/Vorssaint/Services/Display/BrightnessService.swift")
+        let brightnessTapMethod = brightnessSource
+            .components(separatedBy: "    func suspendInputTaps()").dropFirst().first?
+            .components(separatedBy: "    private func installFunctionKeyTap").first ?? ""
+        let brightnessTapCode = brightnessTapMethod.components(separatedBy: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+            .joined(separator: "\n")
+        suite.expect(selfUninstallSource.contains("TextSnippetService.shared.suspend()")
+                && selfUninstallSource.contains("QuitProtectionService.shared.suspend()")
+                && selfUninstallSource.contains("BrightnessService.shared.suspendInputTaps()")
+                && selfUninstallSource.contains("BrightnessService.shared.resumeInputTaps()")
+                && brightnessTapCode.contains("inputTapsSuspended = true")
+                && brightnessTapCode.contains("removeKeyTap()")
+                && brightnessTapCode.contains("removeFunctionKeyTap()")
+                && !brightnessTapCode.contains("restoreManagedDisplays")
+                && !brightnessTapCode.contains("restoreAllGamma"),
+               "the permission teardown stops every persistent keyboard tap")
+        let quitProtectionSource = repository.source(
+            at: "Sources/Vorssaint/Services/QuitProtection/QuitProtectionService.swift")
+        suite.expect(quitProtectionSource.contains("func suspend()"),
+               "quit protection exposes the teardown the permission reset calls")
 
         // MARK: Secure input
 

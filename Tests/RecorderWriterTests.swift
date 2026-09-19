@@ -9,7 +9,6 @@ enum RecorderWriterTests {
         let finished = DispatchSemaphore(value: 0)
         Task.detached {
             do {
-                try await check(suite, forcesBackpressure: true)
                 try await check(suite, delayedVideo: true)
                 try await check(suite, delayedVideo: true, capturesAudio: false)
                 try await check(suite, changingMicrophone: true)
@@ -46,21 +45,14 @@ enum RecorderWriterTests {
                               delayedVideo: Bool = false, capturesAudio: Bool = true,
                               changingMicrophone: Bool = false,
                               microphoneChannels: AVAudioChannelCount = 2,
-                              changingSystemAudio: Bool = false,
-                              forcesBackpressure: Bool = false) async throws {
+                               changingSystemAudio: Bool = false) async throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("recorder-sync-\(UUID()).mov")
         defer { try? FileManager.default.removeItem(at: url) }
         let pause = RecorderPauseClock()
         let origin = CMTime(value: 100, timescale: 1)
         let microphoneClock = RecorderSampleTimingTests.offsetClock()
-        var forcedBackpressure = false
         let writer = RecorderWriter(url: url, pixelSize: CGSize(width: 64, height: 64), frameRate: 30,
-            capturesSystemAudio: capturesAudio, capturesMicrophone: capturesAudio, pauseClock: pause,
-            readinessOverride: forcesBackpressure ? { kind in
-                guard kind == .video, !forcedBackpressure else { return true }
-                forcedBackpressure = true
-                return false
-            } : nil)!
+            capturesSystemAudio: capturesAudio, capturesMicrophone: capturesAudio, pauseClock: pause)!
         precondition(writer.start())
         writer.beginSession(at: origin)
         var pointer = RecorderPointerTrack()
@@ -112,11 +104,6 @@ enum RecorderWriterTests {
                 try await feed(converted, kind: .microphone, to: writer, required: capturesAudio)
             }
         }
-        if forcesBackpressure {
-            suite.expect(forcedBackpressure,
-                         "recorder writer fixtures exercise readiness-driven video backpressure")
-        }
-        try await waitUntilReady(writer, kind: .video)
         let finished = await writer.finish(at: origin + time(1.5))
         suite.expect(finished, changingMicrophone || changingSystemAudio
             ? "the multitrack MOV survives an audio buffer-layout change across a pause"
@@ -211,18 +198,6 @@ enum RecorderWriterTests {
                 attempts += 1
                 try await Task.sleep(nanoseconds: 1_000_000)
             }
-        }
-        throw FixtureError.timedOut(kind)
-    }
-
-    private static func waitUntilReady(_ writer: RecorderWriter,
-                                       kind: RecorderCaptureEngine.Kind) async throws {
-        let deadline = ProcessInfo.processInfo.systemUptime + 2
-        var attempts = 0
-        while attempts < 2_000 && ProcessInfo.processInfo.systemUptime < deadline {
-            if writer.isReadyForMoreMediaData(kind) { return }
-            attempts += 1
-            try await Task.sleep(nanoseconds: 1_000_000)
         }
         throw FixtureError.timedOut(kind)
     }

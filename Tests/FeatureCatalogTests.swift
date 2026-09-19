@@ -246,14 +246,28 @@ enum FeatureCatalogTests {
                "brightness keys do not arm the blocker")
         suite.expect(!MusicLaunchSupport.isMusicLaunchTrigger(subtype: 1, data1: musicKeyData(keyCode: 16)),
                "other system-defined subtypes do not arm the blocker")
-        suite.expect(!MusicLaunchSupport.shouldBlockLaunch(now: 10, lastTriggerAt: nil),
-               "without a recent media key the music app may open")
-        suite.expect(MusicLaunchSupport.shouldBlockLaunch(now: 10, lastTriggerAt: 9.5),
-               "a launch in the arm window after a media key is blocked")
-        suite.expect(MusicLaunchSupport.shouldBlockLaunch(now: 10, lastTriggerAt: 8.0),
+        suite.expect(MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: 9.5, secondsSinceUserGesture: 0.1),
+               "a launch in the arm window after a media key is blocked even right after a click")
+        suite.expect(MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: 8.0, secondsSinceUserGesture: 0.1),
                "a launch on the arm-window edge is still blocked")
-        suite.expect(!MusicLaunchSupport.shouldBlockLaunch(now: 10, lastTriggerAt: 7.9),
-               "a launch after the arm window is left alone")
+        suite.expect(!MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: 7.9, secondsSinceUserGesture: 0.1),
+               "a launch after the arm window that follows a click is left alone")
+        suite.expect(!MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: nil, secondsSinceUserGesture: 0.3),
+               "a launch right after a click or a key press is the user's, with no media key seen")
+        suite.expect(!MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: nil,
+            secondsSinceUserGesture: MusicLaunchSupport.userGestureWindow),
+               "a launch on the gesture-window edge is still the user's")
+        suite.expect(MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: nil, secondsSinceUserGesture: 2.1),
+               "a launch with no recent click or key press came from headphones or a remote command and is blocked")
+        suite.expect(MusicLaunchSupport.shouldBlockLaunch(
+            now: 10, lastTriggerAt: nil, secondsSinceUserGesture: .infinity),
+               "a launch in a session with no gesture at all is blocked, without any media key tap")
 
         // MARK: Features hub catalog
 
@@ -1619,6 +1633,86 @@ enum FeatureCatalogTests {
         settingsRouter.page = .general
         withExtendedLifetime(settingsRequestObservation) {}
 
+        let historyRouter = SettingsRouter()
+        let initialHistoryRequestID = historyRouter.requestID
+        historyRouter.goBack()
+        historyRouter.goForward()
+        suite.expect(historyRouter.page == .general
+                && historyRouter.requestID == initialHistoryRequestID,
+               "an empty Settings history does not navigate or publish requests")
+        historyRouter.page = .about
+        historyRouter.request(repeatedDestination)
+        historyRouter.goBack()
+        suite.expect(historyRouter.page == .about
+                && historyRouter.destination == FeatureSettingsDestination(.about),
+               "Settings Back includes direct sidebar-style page assignments")
+        historyRouter.goBack()
+        suite.expect(historyRouter.page == .general,
+               "Settings Back reaches the initial page")
+        let oldestHistoryRequestID = historyRouter.requestID
+        historyRouter.goBack()
+        suite.expect(historyRouter.requestID == oldestHistoryRequestID,
+               "Settings Back stops at the oldest visit")
+        historyRouter.goForward()
+        suite.expect(historyRouter.page == .about,
+               "Settings Forward retraces the visited pages")
+        historyRouter.goForward()
+        suite.expect(historyRouter.destination == repeatedDestination
+                && historyRouter.pendingDestinationRequest?.destination == repeatedDestination,
+               "Settings history restores section anchors with a fresh focus request")
+        let newestHistoryRequestID = historyRouter.requestID
+        historyRouter.goForward()
+        suite.expect(historyRouter.requestID == newestHistoryRequestID,
+               "Settings Forward stops at the newest visit")
+
+        historyRouter.page = .mouse
+        let refinedDestination = FeatureSettingsDestination(.mouse, sectionAnchor: .smoothScroll)
+        historyRouter.request(refinedDestination)
+        historyRouter.request(refinedDestination)
+        historyRouter.goBack()
+        suite.expect(historyRouter.page == .about,
+               "repeated page selections and same-page section requests do not duplicate history")
+        historyRouter.goForward()
+        suite.expect(historyRouter.destination == refinedDestination,
+               "same-page section requests refine the destination restored by history")
+        historyRouter.goBack()
+        historyRouter.page = .support
+        let branchedHistoryRequestID = historyRouter.requestID
+        historyRouter.goForward()
+        suite.expect(historyRouter.page == .support
+                && historyRouter.requestID == branchedHistoryRequestID,
+               "a new sidebar visit after Back discards forward history")
+        historyRouter.goBack()
+        historyRouter.request(FeatureSettingsDestination(.features), targetFeature: .homebrew)
+        historyRouter.goForward()
+        suite.expect(historyRouter.page == .features,
+               "a destination request after Back also discards forward history")
+        historyRouter.page = .advanced
+        suite.expect(historyRouter.destination == FeatureSettingsDestination(.advanced)
+                && historyRouter.pendingDestinationRequest == nil
+                && historyRouter.pendingFeatureTarget == nil,
+               "direct page navigation synchronizes the destination and clears stale reveal requests")
+
+        let hiddenHistoryRouter = SettingsRouter()
+        hiddenHistoryRouter.page = .mouse
+        hiddenHistoryRouter.page = .about
+        hiddenHistoryRouter.goBack(isPageVisible: { $0 != .mouse })
+        suite.expect(hiddenHistoryRouter.page == .general,
+               "Settings Back skips pages whose features are no longer available")
+        hiddenHistoryRouter.goForward(isPageVisible: { $0 != .mouse })
+        suite.expect(hiddenHistoryRouter.page == .about,
+               "skipping a hidden page preserves forward history")
+        let visibleHistoryRequestID = hiddenHistoryRouter.requestID
+        hiddenHistoryRouter.goBack(isPageVisible: { _ in false })
+        suite.expect(hiddenHistoryRouter.page == .about
+                && hiddenHistoryRouter.requestID == visibleHistoryRequestID,
+               "Settings history stays put when no earlier page is visible")
+        hiddenHistoryRouter.cleanerTool = "stale-tool"
+        hiddenHistoryRouter.goBack()
+        suite.expect(hiddenHistoryRouter.page == .mouse
+                && hiddenHistoryRouter.cleanerTool == nil,
+               "history can revisit re-enabled pages without replaying a stale Cleaner tool hint")
+
         // MARK: Display brightness (DDC/CI helpers)
 
         // Every section of the service below its "Rebuild (work queue)" MARK
@@ -1780,7 +1874,7 @@ enum FeatureCatalogTests {
                 && !SettingsBackupSupport.exportKeys().contains(
                     DefaultsKey.brightnessForcedSoftwarePaths),
                "a hand-picked software dimming route never travels in a settings backup")
-        for surface in ["Sources/Vorssaint/UI/Settings/SettingsView.swift",
+        for surface in ["Sources/Vorssaint/UI/Settings/EnergySettings.swift",
                         "Sources/Vorssaint/UI/MenuPanel/BrightnessSection.swift"] {
             let source = (try? String(contentsOfFile: surface, encoding: .utf8)) ?? ""
             suite.expect(source.contains("SoftwareDimmingButton(display: display"),

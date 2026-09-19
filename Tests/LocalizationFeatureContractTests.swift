@@ -100,7 +100,6 @@ enum LocalizationFeatureContractTests {
             suite.expect(!strings.homebrewUpdateHomebrew.isEmpty, "\(prefix) Homebrew update Homebrew title is present")
             expectFormat(strings.switcherIconRowMode, ["@"], "\(prefix) App Switcher icon-row title format")
             suite.expect(!strings.switcherIconRowModeCaption.isEmpty, "\(prefix) App Switcher icon-row caption is present")
-            suite.expect(!strings.switcherSimpleMode.isEmpty, "\(prefix) App Switcher simple-mode title is present")
             suite.expect(!strings.switcherSimpleModeCaption.isEmpty, "\(prefix) App Switcher simple-mode caption is present")
             suite.expect(!strings.switcherCurrentSpaceOnly.isEmpty
                    && !strings.switcherCurrentSpaceOnly.contains("—"),

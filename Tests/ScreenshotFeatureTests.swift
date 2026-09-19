@@ -929,7 +929,7 @@ enum ScreenshotFeatureTests {
                "an empty step leaves no dangling separator")
         // The cleanup above is the only kind that survives exit(). A defer
         // that removes a file here would look like housekeeping and do none.
-        let suiteSource = (try? String(contentsOfFile: "Tests/MetricsTests.swift",
+        let suiteSource = (try? String(contentsOfFile: "Tests/ScreenshotFeatureTests.swift",
                                        encoding: .utf8)) ?? ""
         suite.expect(!suiteSource.isEmpty, "the suite reads itself back for its own shape check")
         // Split so the needle never matches the line that looks for it.
@@ -2543,6 +2543,24 @@ enum ScreenshotFeatureTests {
                                                  present: ["mic-a", "mic-b"]).isEmpty
                 && MicMuteSupport.restoreTargets(recorded: ["mic-a"], present: []).isEmpty,
                "unmuting touches the microphones this app muted, every one with no record, and none when the record is empty")
+        suite.expect(MicMuteSupport.absentClaims(recorded: ["mic-a", "headset"],
+                                           present: ["mic-a"]) == ["headset"]
+                && MicMuteSupport.absentClaims(recorded: ["mic-a"],
+                                               present: ["mic-a", "mic-b"]).isEmpty
+                && MicMuteSupport.absentClaims(recorded: nil, present: ["mic-a"]).isEmpty
+                && MicMuteSupport.absentClaims(recorded: ["headset"], present: []) == ["headset"],
+               "a sweep keeps the claim on a microphone this app muted that is unplugged right now, so it is released when it returns")
+        let micMuteServiceSource = (try? String(
+            contentsOfFile: "Sources/Vorssaint/Services/QuickTools/MicMuteService.swift",
+            encoding: .utf8)) ?? ""
+        let reapply = micMuteServiceSource.range(of: "private func reapplyIfNeeded() {")
+            .map { micMuteServiceSource[$0.lowerBound...] }
+            .flatMap { body in body.range(of: "\n    }\n").map { body[..<$0.lowerBound] } }
+            .map(String.init) ?? ""
+        suite.expect(reapply.contains("if wantsMute {") && !reapply.contains("micMuteActive")
+                && micMuteServiceSource.contains(
+                    "private func apply(muted: Bool, announce: Bool) {\n        wantsMute = muted"),
+               "a device change re-asserts the mute request in flight, never the persisted flag it is about to replace")
 
         suite.expect(Defaults.registeredDefaults[DefaultsKey.radialMenuEnabled] as? Bool == false,
                "the radial menu ships off by default")
