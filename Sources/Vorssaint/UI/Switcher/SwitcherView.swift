@@ -333,10 +333,19 @@ struct SwitcherView: View {
                                height: SwitcherIconRowLayout.previewCardHeight)
                         .onAppear { revealSelection(in: proxy, animated: false) }
                         .onChange(of: switcher.selectedIndex) { _, _ in
-                            revealSelection(in: proxy, animated: true)
+                            DispatchQueue.main.async {
+                                revealSelection(in: proxy, animated: true)
+                            }
                         }
                         .onChange(of: appWindows.map(\.element.id)) { _, _ in
-                            revealSelection(in: proxy, animated: true)
+                            DispatchQueue.main.async {
+                                revealSelection(in: proxy, animated: true)
+                            }
+                        }
+                        .onChange(of: switcher.iconRowLayout.previewContentWidth) { _, _ in
+                            DispatchQueue.main.async {
+                                revealSelection(in: proxy, animated: true)
+                            }
                         }
                         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { _ in
                             DispatchQueue.main.async {
