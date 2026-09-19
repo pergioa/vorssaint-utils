@@ -54,6 +54,8 @@ final class AutoQuitService: ObservableObject {
     private var spaceChangeToken: NSObjectProtocol?
     private var closeRequestTap: CFMachPort?
     private var closeRequestRunLoopSource: CFRunLoopSource?
+    private var fullscreenCloseTap: CFMachPort?
+    private var fullscreenCloseRunLoopSource: CFRunLoopSource?
     private var pendingFullscreenClose: FullscreenCloseTarget?
     private var recentCloseButtonRequests: [pid_t: Date] = [:]
     private var lastScheduledChecks: [pid_t: Date] = [:]
@@ -648,14 +650,13 @@ final class AutoQuitService: ObservableObject {
     // MARK: - Close-request monitor
 
     private func startCloseRequestMonitor() {
-        guard closeRequestTap == nil else { return }
+        guard closeRequestTap == nil, fullscreenCloseTap == nil else { return }
         let mask = CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
-            | CGEventMask(1 << CGEventType.leftMouseUp.rawValue)
             | CGEventMask(1 << CGEventType.keyDown.rawValue)
         guard let tap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .tailAppendEventTap,
-            options: .defaultTap,
+            options: .listenOnly,
             eventsOfInterest: mask,
             callback: { _, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
@@ -664,24 +665,54 @@ final class AutoQuitService: ObservableObject {
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else { return }
+        guard let fullscreenTap = CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .tailAppendEventTap,
+            options: .defaultTap,
+            eventsOfInterest: CGEventMask(1 << CGEventType.leftMouseUp.rawValue),
+            callback: { _, type, event, userInfo in
+                guard let userInfo else { return Unmanaged.passUnretained(event) }
+                let service = Unmanaged<AutoQuitService>.fromOpaque(userInfo).takeUnretainedValue()
+                return service.handleFullscreenCloseEvent(type: type, event: event)
+            },
+            userInfo: Unmanaged.passUnretained(self).toOpaque()
+        ) else {
+            CFMachPortInvalidate(tap)
+            return
+        }
 
         closeRequestTap = tap
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         closeRequestRunLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
+
+        fullscreenCloseTap = fullscreenTap
+        let fullscreenSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, fullscreenTap, 0)
+        fullscreenCloseRunLoopSource = fullscreenSource
+        CFRunLoopAddSource(CFRunLoopGetMain(), fullscreenSource, .commonModes)
+        CGEvent.tapEnable(tap: fullscreenTap, enable: true)
     }
 
     private func stopCloseRequestMonitor() {
         if let closeRequestTap {
             CGEvent.tapEnable(tap: closeRequestTap, enable: false)
         }
+        if let fullscreenCloseTap {
+            CGEvent.tapEnable(tap: fullscreenCloseTap, enable: false)
+        }
         if let closeRequestRunLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), closeRequestRunLoopSource, .commonModes)
         }
+        if let fullscreenCloseRunLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), fullscreenCloseRunLoopSource, .commonModes)
+        }
         if let closeRequestTap { CFMachPortInvalidate(closeRequestTap) }
+        if let fullscreenCloseTap { CFMachPortInvalidate(fullscreenCloseTap) }
         closeRequestTap = nil
         closeRequestRunLoopSource = nil
+        fullscreenCloseTap = nil
+        fullscreenCloseRunLoopSource = nil
         pendingFullscreenClose = nil
     }
 
@@ -697,18 +728,6 @@ final class AutoQuitService: ObservableObject {
             return Unmanaged.passUnretained(event)
         }
 
-        if type == .leftMouseUp, let target = pendingFullscreenClose {
-            pendingFullscreenClose = nil
-            guard AXIsProcessTrusted(),
-                  target.buttonFrame.insetBy(dx: -4, dy: -4).contains(event.location),
-                  Self.boolAttribute(target.window, "AXFullScreen") else { return nil }
-            // Accessibility pressing the verified button bypasses macOS's
-            // first-click fullscreen exit while preserving the app's close
-            // handling, including save prompts.
-            markCloseButtonRequest(pid: target.pid)
-            AXUIElementPerformAction(target.button, kAXPressAction as CFString)
-            return nil
-        }
         pendingFullscreenClose = nil
 
         // Accessibility gone (e.g. reset): the AX hit-test below would hang
@@ -744,13 +763,32 @@ final class AutoQuitService: ObservableObject {
                                        bundleURL: app.bundleURL,
                                        exceptions: exceptions) {
             pendingFullscreenClose = target
-            return nil
         }
         if let observer = observers[hit.pid] {
             refreshWindows(pid: hit.pid, observer: observer)
         }
         markCloseButtonRequest(pid: hit.pid)
         return Unmanaged.passUnretained(event)
+    }
+
+    private func handleFullscreenCloseEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            pendingFullscreenClose = nil
+            if let fullscreenCloseTap { CGEvent.tapEnable(tap: fullscreenCloseTap, enable: true) }
+            return Unmanaged.passUnretained(event)
+        }
+
+        guard type == .leftMouseUp, let target = pendingFullscreenClose else {
+            return Unmanaged.passUnretained(event)
+        }
+        pendingFullscreenClose = nil
+        guard AXIsProcessTrusted(),
+              target.buttonFrame.insetBy(dx: -4, dy: -4).contains(event.location),
+              Self.boolAttribute(target.window, "AXFullScreen"),
+              AXUIElementPerformAction(target.button, kAXPressAction as CFString) == .success else {
+            return Unmanaged.passUnretained(event)
+        }
+        return nil
     }
 
     private func handleCloseRequestKeyDown(event: CGEvent) {
