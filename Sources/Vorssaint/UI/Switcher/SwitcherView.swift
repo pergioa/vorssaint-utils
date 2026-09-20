@@ -331,6 +331,7 @@ struct SwitcherView: View {
                         .scrollDisabled(switcher.iconRowLayout.previewFitsWithoutScrolling(cardCount: appWindows.count))
                         .frame(width: switcher.iconRowLayout.previewContentWidth,
                                height: SwitcherIconRowLayout.previewCardHeight)
+                        .id(switcher.iconRowLayout.previewContentWidth)
                         .onAppear { revealSelection(in: proxy, animated: false) }
                         .onChange(of: switcher.selectedIndex) { _, _ in
                             DispatchQueue.main.async {
@@ -338,11 +339,6 @@ struct SwitcherView: View {
                             }
                         }
                         .onChange(of: appWindows.map(\.element.id)) { _, _ in
-                            DispatchQueue.main.async {
-                                revealSelection(in: proxy, animated: true)
-                            }
-                        }
-                        .onChange(of: switcher.iconRowLayout.previewContentWidth) { _, _ in
                             DispatchQueue.main.async {
                                 revealSelection(in: proxy, animated: true)
                             }
