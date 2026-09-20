@@ -16,9 +16,16 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "build/generated-tests"
 
 
-def declaration(path, prefix):
+def declaration(path, prefix, scope=None):
     lines = (ROOT / path).read_text().splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+    lower, upper = 0, len(lines)
+    if scope is not None:
+        scopes = [i for i, line in enumerate(lines) if line.startswith(scope)]
+        if len(scopes) != 1:
+            raise ValueError(f"Expected one scope {scope!r} in {path}")
+        lower = scopes[0] + 1
+        upper = next(i for i in range(lower, len(lines)) if lines[i].rstrip() == "}")
+    starts = [i for i in range(lower, upper) if lines[i].startswith(prefix)]
     if len(starts) != 1:
         raise ValueError(f"Expected one declaration {prefix!r} in {path}")
     start = starts[0]
@@ -41,6 +48,13 @@ def availability_declaration(path, prefix):
 def main():
     OUTPUT.mkdir(parents=True, exist_ok=True)
     panel = "Sources/Vorssaint/App/AppDelegate.swift"
+    write("PostUpdateStatusItemRecovery.swift", "import AppKit\nimport Foundation\n"
+          + "extension PostUpdateStatusItemRecoveryTests {\nfinal class Host: Fixture {\n"
+          + "".join(declaration(panel, prefix).replace("private ", "") for prefix in [
+              "    private func recoverStatusItemAfterUpdate(",
+              "    private func verifyPostUpdateStatusItem(",
+              "    private func iconIsOnScreen("])
+          + "}\n}\n")
     write("MenuPanelRecovery.swift", "import AppKit\nimport Foundation\n"
           + "extension MenuPanelRecoveryTests {\nfinal class Host: Fixture {\n"
           + "".join(declaration(panel, prefix).replace("private ", "") for prefix in [
@@ -104,6 +118,10 @@ def main():
           + declaration("Sources/Vorssaint/Services/Finder/FinderCutPaste.swift", "    static func selectionURLs(")
           + "}\n")
     dock = "Sources/Vorssaint/Services/DockPreview/DockPreviewService.swift"
+    write("DockPreviewFrameRetry.swift", "import Foundation\nextension DockPreviewFrameRestorationTests {\n"
+          + declaration("Sources/Vorssaint/Services/DockPreview/DockPreviewFrameRestoration.swift",
+                        "    private static func restore(").replace("private static func", "static func", 1)
+          + "}\n")
     write("DockPreviewScope.swift", "import Foundation\nextension DockPreviewScopeTests.Service {\n"
           + "".join(declaration(dock, prefix).replace("private func", "func", 1)
                     for prefix in ["    private func syncSpaceObservation()",
@@ -113,11 +131,13 @@ def main():
                         "    static func dockPreviewMayActivate(")
           + "}\n")
     write("DockAutohideInput.swift", "import CoreGraphics\nimport Foundation\nextension DockAutohideHoldTests.Service {\n"
-          + "".join(declaration(dock, prefix).replace("private func", "func", 1)
+          + "".join(declaration(dock, prefix, scope="final class DockPreviewService:")
+                    .replace("private func", "func", 1)
                     for prefix in ["    private func beginDockAutohideHold()",
                                    "    private func releaseDockAutohideHold()",
                                    "    private func handleDockHoldInput(type:",
-                                   "    private func handle(type:"])
+                                   "    private func handle(type:",
+                                   "    func commit("])
           + "}\n")
     # Entire input/mute services retain their production control flow. Only
     # visibility, scheduling, defaults and HAL transport are replaced by fixtures.
@@ -305,6 +325,7 @@ def main():
           + declaration(notch, "    private func stopMenuSpaceMonitoring()")
           + declaration(notch, "    private func syncMenuSpaceMonitoring()").replace("private func", "func", 1)
               .replace("AXIsProcessTrusted()", "accessibilityGranted")
+              .replace("NotchSupport.coversMenus()", "coversMenus")
           + "}\n}\n")
     write("NotchPresentationRefresh.swift", "import Foundation\nimport Combine\n"
           + "extension NotchPresentationRefreshContract {\nfinal class Service: State {\n"
@@ -654,6 +675,16 @@ def main():
           + "static let factories: [(String, (AppLanguage) -> Any)] = [\n"
           + "".join(f'("{name}", {{ FeatureStrings.{name}($0) }}),\n' for name in factories)
           + "]\n}\n")
+
+    # Same-file extensions can exercise the private AppKit content view without
+    # widening the production interface or presenting an application window.
+    hud = "Sources/Vorssaint/UI/QuitProtection/QuitProtectionHUD.swift"
+    checks = "Tests/Fixtures/QuitProtectionHUDChecks.swift"
+    write("QuitProtectionHUDBodies.swift",
+          f'#sourceLocation(file: {json.dumps(hud)}, line: 1)\n'
+          + (ROOT / hud).read_text() + "\n"
+          + f'#sourceLocation(file: {json.dumps(checks)}, line: 1)\n'
+          + (ROOT / checks).read_text() + "\n#sourceLocation()\n")
 
 
 if __name__ == "__main__":
