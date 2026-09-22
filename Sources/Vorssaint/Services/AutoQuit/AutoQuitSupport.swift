@@ -73,6 +73,13 @@ enum AutoQuitSupport {
         result == .success || result == .notificationAlreadyRegistered
     }
 
+    /// `cannotComplete` is ambiguous: the target app can time out after it has
+    /// already begun closing and opened a save dialog. Replaying the native
+    /// release then starts a second close, so only definite failures fall back.
+    static func shouldConsumeFullscreenCloseAction(_ result: AXError) -> Bool {
+        result == .success || result == .cannotComplete
+    }
+
     static func shouldQuitAfterWindowCheck(hadWindows: Bool,
                                            appIsTerminated: Bool,
                                            appIsExcepted: Bool,

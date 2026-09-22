@@ -1235,6 +1235,10 @@ enum AppManagementFeatureTests {
                "a window already registered on this observer stays watched across refreshes")
         suite.expect(!AutoQuitSupport.isWindowNotificationRegistered(.cannotComplete),
                "a window whose registration was refused is not watched")
+        suite.expect(AutoQuitSupport.shouldConsumeFullscreenCloseAction(.success)
+                && AutoQuitSupport.shouldConsumeFullscreenCloseAction(.cannotComplete)
+                && !AutoQuitSupport.shouldConsumeFullscreenCloseAction(.actionUnsupported),
+               "a fullscreen close consumes success and an indeterminate timeout, but falls back after definite failure")
         let autoQuitServiceSource = (try? String(
             contentsOfFile: "Sources/Vorssaint/Services/AutoQuit/AutoQuitService.swift",
             encoding: .utf8)) ?? ""
@@ -1308,15 +1312,23 @@ enum AppManagementFeatureTests {
             "private var fullscreenCloseTap: CFMachPort?",
             "eventsOfInterest: CGEventMask(1 << CGEventType.leftMouseUp.rawValue)",
             "options: .defaultTap",
-            "pendingFullscreenClose = target",
+            "thread.name = \"Vorssaint Auto Quit Fullscreen Close\"",
+            "let runLoop = CFRunLoopGetCurrent()",
+            "CFRunLoopAddSource(runLoop, source, .commonModes)",
+            "PendingFullscreenClose(mouseDownTimestamp: mouseDownTimestamp,",
+            "guard fullscreenCloseThread === Thread.current else { return nil }",
+            "CGEventSource.buttonState(.combinedSessionState, button: .left)",
             "Self.boolAttribute(target.window, \"AXFullScreen\")",
-            "AXUIElementPerformAction(target.button, kAXPressAction as CFString) == .success",
+            "AutoQuitSupport.shouldConsumeFullscreenCloseAction(actionResult)",
         ]
         let missingFullscreenCloseCode = fullscreenCloseCode.filter {
             autoQuitServiceCodeLines(containing: $0).isEmpty
         }
         suite.expect(missingFullscreenCloseCode.isEmpty,
-               "AutoQuit observes ordinary close input passively, consumes a verified fullscreen red-button release, and preserves normal close fallback: missing \(missingFullscreenCloseCode)")
+               "AutoQuit observes ordinary close input passively, handles releases off-main, consumes a verified fullscreen red-button release or indeterminate timeout, and preserves definite-failure fallback: missing \(missingFullscreenCloseCode)")
+        suite.expect(!autoQuitServiceSource.contains(
+                   "CFRunLoopAddSource(CFRunLoopGetMain(), fullscreenSource"),
+               "the active fullscreen release tap never shares the main run loop with Accessibility hit testing")
 
         // Attaching to a watched app must never ask its application element for
         // a role. A Chromium app (Electron, and the browsers) answers that by
