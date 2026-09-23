@@ -3556,6 +3556,46 @@ enum SwitcherModelFeatureTests {
             in: [cameraInsetWindow], at: CGPoint(x: 120, y: 55),
             ownProcessID: 501)?.pid == 1001,
             "a fullscreen window below a camera housing still has a close-button candidate")
+        let cameraToolbar = windowServerEntry(
+            CGRect(x: 100, y: 0, width: 1440, height: 70), pid: 1001, number: 20)
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [cameraToolbar, cameraInsetWindow], at: CGPoint(x: 120, y: 55),
+            ownProcessID: 501, verticalClearance: 24, stripTopClearance: 74)?.pid == 1001
+            && WindowServerSupport.fullscreenCloseCandidate(
+                in: [cameraToolbar, cameraInsetWindow], at: CGPoint(x: 120, y: 55),
+                ownProcessID: 501, verticalClearance: 24) == nil,
+            "a detached titlebar above a camera-inset fullscreen window remains a close candidate")
+        let toolbar = windowServerEntry(CGRect(x: 0, y: 0, width: 200, height: 70),
+                                        pid: 1001, number: 16)
+        let anotherAppsToolbar = windowServerEntry(CGRect(x: 0, y: 0, width: 200, height: 70),
+                                                   pid: 1002, number: 17)
+        let smallMenu = windowServerEntry(CGRect(x: 0, y: 0, width: 60, height: 70),
+                                          pid: 1001, number: 18)
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [toolbar, scannedStack[0]], at: scannedCloseButtonPoint,
+            ownProcessID: 501)?.pid == 1001,
+            "a fullscreen app's short title bar does not hide its own close button")
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [anotherAppsToolbar, scannedStack[0]], at: scannedCloseButtonPoint,
+            ownProcessID: 501) == nil,
+            "a strip belonging to another app cannot expose a close button behind it")
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [smallMenu, scannedStack[0]], at: scannedCloseButtonPoint,
+            ownProcessID: 501) == nil,
+            "a narrow menu from the same app cannot expose a close button behind it")
+        let offsetMenu = windowServerEntry(CGRect(x: 0, y: 40, width: 200, height: 70),
+                                           pid: 1001, number: 19)
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [offsetMenu, scannedStack[0]], at: CGPoint(x: 20, y: 55),
+            ownProcessID: 501, verticalClearance: 24) == nil,
+            "a same-app dropdown below the title bar does not expose the close button behind it")
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [toolbar, scannedStack[0]], at: CGPoint(x: 20, y: 55),
+            ownProcessID: 501, verticalClearance: 24)?.pid == 1001
+            && WindowServerSupport.fullscreenCloseCandidate(
+                in: [toolbar, scannedStack[0]], at: CGPoint(x: 20, y: 55),
+                ownProcessID: 501) == nil,
+            "a revealed title bar below the menu bar can be pressed past the ordinary 46-point gate")
 
         // Unlike the click scan, hover must stop at our interactive surfaces
         // before making any Accessibility call, even for a tiny raised panel.

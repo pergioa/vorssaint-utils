@@ -62,8 +62,12 @@ final class AutoQuitService: ObservableObject {
     private var fullscreenCloseThread: Thread?
     private var fullscreenCloseGeneration: UInt = 0
     private var pendingFullscreenClose: PendingFullscreenClose?
+    private struct FullscreenCloseDisplay {
+        let topClearance: CGFloat
+        let menuBarClearance: CGFloat
+    }
     /// Written on main on Space/display changes, read by the dedicated tap.
-    private var fullscreenCloseDisplays: [CGDirectDisplayID: CGFloat] = [:]
+    private var fullscreenCloseDisplays: [CGDirectDisplayID: FullscreenCloseDisplay] = [:]
     private var recentCloseButtonRequests: [pid_t: Date] = [:]
     private var lastScheduledChecks: [pid_t: Date] = [:]
     /// Apps whose attach is waiting on a retry, so a second round never starts.
@@ -672,8 +676,9 @@ final class AutoQuitService: ObservableObject {
     private func updateFullscreenCloseDisplays() {
         let topology = SpaceWindowBridge.topology()
         let separateSpaces = NSScreen.screensHaveSeparateSpaces
+        let menuBarClearance = NSStatusBar.system.thickness
         let displays = Dictionary(uniqueKeysWithValues: NSScreen.screens.compactMap {
-            screen -> (CGDirectDisplayID, CGFloat)? in
+            screen -> (CGDirectDisplayID, FullscreenCloseDisplay)? in
             guard let id = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
                     .uint32Value,
                   topology?.isFullscreen(on: id, separateSpaces: separateSpaces) == true
@@ -681,7 +686,8 @@ final class AutoQuitService: ObservableObject {
             // Fullscreen can report a zero safe area even when the built-in
             // camera housing keeps the window's title bar below it.
             let clearance = CGDisplayIsBuiltin(id) != 0 ? max(screen.safeAreaInsets.top, 50) : 0
-            return (id, clearance)
+            return (id, FullscreenCloseDisplay(topClearance: clearance + menuBarClearance,
+                                               menuBarClearance: menuBarClearance))
         })
         fullscreenCloseLock.withLock { fullscreenCloseDisplays = displays }
     }
@@ -916,16 +922,18 @@ final class AutoQuitService: ObservableObject {
                 defer { pendingFullscreenClose = nil }
                 return pendingFullscreenClose
             }
-            if let stale { flushFullscreenClose(stale) }
+            if let stale { flushFullscreenClose(stale, proxy: proxy) }
             // Only a possible close click on a native fullscreen Space pays
             // for the window list; AX verification happens later on main.
             guard event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty,
                   let display = Self.display(at: event.location),
-                  let safeAreaTop = fullscreenCloseLock.withLock({ fullscreenCloseDisplays[display] }),
+                  let displayInfo = fullscreenCloseLock.withLock({ fullscreenCloseDisplays[display] }),
                   AutoQuitSupport.mayContainFullscreenClose(event.location,
                                                             display: CGDisplayBounds(display),
-                                                            safeAreaTop: safeAreaTop),
-                  let candidate = WindowServerTrafficLightHitTest.fullscreenCloseCandidate(at: event.location),
+                                                            topClearance: displayInfo.topClearance),
+                  let candidate = WindowServerTrafficLightHitTest.fullscreenCloseCandidate(
+                    at: event.location, verticalClearance: displayInfo.menuBarClearance,
+                    stripTopClearance: displayInfo.topClearance),
                   let down = event.copy() else { return Unmanaged.passUnretained(event) }
             let generation = fullscreenCloseLock.withLock { () -> UInt in
                 pendingFullscreenClose = PendingFullscreenClose(mouseDownTimestamp: event.timestamp,
@@ -995,14 +1003,21 @@ final class AutoQuitService: ObservableObject {
             AXUIElementPerformAction(target.button, kAXPressAction as CFString))
     }
 
-    private func flushFullscreenClose(_ pending: PendingFullscreenClose) {
+    private func flushFullscreenClose(_ pending: PendingFullscreenClose,
+                                      proxy: CGEventTapProxy? = nil) {
         guard SessionActivity.shared.isActive else { return }
         if let release = pending.release {
-            replayFullscreenPress(pending.down, proxy: nil)
-            release.setIntegerValueField(.eventSourceUserData, value: Self.replayedClosePressMarker)
-            release.post(tap: .cgSessionEventTap)
+            replayFullscreenPress(pending.down, proxy: proxy)
+            if let proxy {
+                // Both halves precede the new down that this callback is
+                // returning; a session-level post can arrive after it.
+                release.tapPostEvent(proxy)
+            } else {
+                release.setIntegerValueField(.eventSourceUserData, value: Self.replayedClosePressMarker)
+                release.post(tap: .cgSessionEventTap)
+            }
         } else if CGEventSource.buttonState(.combinedSessionState, button: .left) {
-            replayFullscreenPress(pending.down, proxy: nil)
+            replayFullscreenPress(pending.down, proxy: proxy)
         }
     }
 

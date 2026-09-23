@@ -1241,14 +1241,18 @@ enum AppManagementFeatureTests {
                "a fullscreen close consumes success and an indeterminate timeout, but falls back after definite failure")
         let display = CGRect(x: 100, y: 50, width: 1440, height: 900)
         suite.expect(AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 120, y: 68),
-                                                               display: display, safeAreaTop: 0)
+                                                               display: display, topClearance: 0)
+                && AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 120, y: 105),
+                                                              display: display, topClearance: 24)
+                && !AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 120, y: 105),
+                                                               display: display, topClearance: 0)
                 && AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 120, y: 123),
-                                                              display: display, safeAreaTop: 38)
+                                                              display: display, topClearance: 38)
                 && !AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 120, y: 123),
-                                                               display: display, safeAreaTop: 0)
+                                                               display: display, topClearance: 0)
                 && !AutoQuitSupport.mayContainFullscreenClose(CGPoint(x: 300, y: 68),
-                                                               display: display, safeAreaTop: 38),
-               "fullscreen preflight includes camera-housing clearance but excludes ordinary display clicks")
+                                                               display: display, topClearance: 62),
+               "fullscreen preflight includes menu-bar and camera-housing clearance but excludes ordinary clicks")
         let autoQuitServiceSource = (try? String(
             contentsOfFile: "Sources/Vorssaint/Services/AutoQuit/AutoQuitService.swift",
             encoding: .utf8)) ?? ""
@@ -1330,8 +1334,10 @@ enum AppManagementFeatureTests {
             "PendingFullscreenClose(mouseDownTimestamp: event.timestamp,",
             "guard fullscreenCloseThread === Thread.current else { return (nil, nil) }",
             "down.tapPostEvent(proxy)",
+            "if let stale { flushFullscreenClose(stale, proxy: proxy) }",
+            "release.tapPostEvent(proxy)",
             "AutoQuitSupport.mayContainFullscreenClose(event.location,",
-            "WindowServerTrafficLightHitTest.fullscreenCloseCandidate(at: event.location)",
+            "let candidate = WindowServerTrafficLightHitTest.fullscreenCloseCandidate(",
             "SessionActivity.shared.onChange { [weak self] _ in",
             "CGEventSource.buttonState(.combinedSessionState, button: .left)",
             "Self.boolAttribute(target.window, \"AXFullScreen\")",

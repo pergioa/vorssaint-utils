@@ -31,8 +31,12 @@ enum WindowServerTrafficLightHitTest {
                                                   pidIsEligible: pidIsEligible)
     }
 
-    static func fullscreenCloseCandidate(at point: CGPoint) -> TrafficLightCandidate? {
+    static func fullscreenCloseCandidate(at point: CGPoint,
+                                         verticalClearance: CGFloat,
+                                         stripTopClearance: CGFloat) -> TrafficLightCandidate? {
         WindowServerSupport.fullscreenCloseCandidate(in: WindowServerSupport.onScreenWindowInfo(),
-                                                     at: point, ownProcessID: getpid())
+                                                     at: point, ownProcessID: getpid(),
+                                                     verticalClearance: verticalClearance,
+                                                     stripTopClearance: stripTopClearance)
     }
 }

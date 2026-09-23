@@ -82,13 +82,13 @@ enum AutoQuitSupport {
     }
 
     /// A cheap gate before copying the WindowServer list. Fullscreen windows
-    /// on camera-housing displays can begin below the safe area, so include it
-    /// here; the window's own button area and AX are checked after this.
+    /// on camera-housing displays can begin below the safe area; revealed title
+    /// bars can also sit below the menu bar. The window and AX checks follow.
     static func mayContainFullscreenClose(_ point: CGPoint, display: CGRect,
-                                          safeAreaTop: CGFloat) -> Bool {
+                                          topClearance: CGFloat) -> Bool {
         point.x >= display.minX - 6 && point.x <= display.minX + 52
             && point.y >= display.minY - 6
-            && point.y <= display.minY + 46 + safeAreaTop
+            && point.y <= display.minY + 46 + topClearance
     }
 
     static func shouldQuitAfterWindowCheck(hadWindows: Bool,
