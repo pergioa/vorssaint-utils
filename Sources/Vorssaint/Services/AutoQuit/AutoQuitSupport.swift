@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Vorssaint
 
 import ApplicationServices
+import CoreGraphics
 import Foundation
 
 enum AutoQuitWindowEvent: Equatable {
@@ -78,6 +79,13 @@ enum AutoQuitSupport {
     /// release then starts a second close, so only definite failures fall back.
     static func shouldConsumeFullscreenCloseAction(_ result: AXError) -> Bool {
         result == .success || result == .cannotComplete
+    }
+
+    /// Only hold a press when WindowServer shows a window filling its display.
+    /// AX still verifies the actual fullscreen close button before acting.
+    static func coversDisplay(_ window: CGRect, display: CGRect) -> Bool {
+        abs(window.minX - display.minX) <= 2 && abs(window.minY - display.minY) <= 2
+            && abs(window.maxX - display.maxX) <= 2 && abs(window.maxY - display.maxY) <= 2
     }
 
     static func shouldQuitAfterWindowCheck(hadWindows: Bool,

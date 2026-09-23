@@ -16,6 +16,7 @@ import Combine
 /// Accessibility.
 final class AutoQuitService: ObservableObject {
     static let shared = AutoQuitService()
+    private static let replayedClosePressMarker: Int64 = 0x4151434C
 
     /// Bundle ids never auto-quit; mirrors the persisted list for the UI.
     @Published private(set) var exceptions: [String] = []
@@ -80,6 +81,9 @@ final class AutoQuitService: ObservableObject {
 
     private init() {
         reloadExceptions()
+        SessionActivity.shared.onChange { [weak self] _ in
+            self?.syncWithPreferences()
+        }
     }
 
     var isRunning: Bool { running }
@@ -89,7 +93,9 @@ final class AutoQuitService: ObservableObject {
     func syncWithPreferences() {
         let enabled = AppFeature.autoQuit.isAvailable
             && UserDefaults.standard.bool(forKey: DefaultsKey.autoQuitEnabled)
-        if enabled, Permissions.shared.accessibility {
+        if SessionActivitySupport.tapShouldRun(featureWanted: enabled,
+                                               accessibilityGranted: AXIsProcessTrusted(),
+                                               sessionIsActive: SessionActivity.shared.isActive) {
             start()
         } else {
             stop()
@@ -669,13 +675,15 @@ final class AutoQuitService: ObservableObject {
         ) else { return }
         guard let fullscreenTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
-            place: .tailAppendEventTap,
+            place: .headInsertEventTap,
             options: .defaultTap,
-            eventsOfInterest: CGEventMask(1 << CGEventType.leftMouseUp.rawValue),
-            callback: { _, type, event, userInfo in
+            eventsOfInterest: CGEventMask(1 << CGEventType.leftMouseDown.rawValue)
+                | CGEventMask(1 << CGEventType.leftMouseUp.rawValue)
+                | CGEventMask(1 << CGEventType.leftMouseDragged.rawValue),
+            callback: { proxy, type, event, userInfo in
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let service = Unmanaged<AutoQuitService>.fromOpaque(userInfo).takeUnretainedValue()
-                return service.handleFullscreenCloseEvent(type: type, event: event)
+                return service.handleFullscreenCloseEvent(proxy: proxy, type: type, event: event)
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
         ) else {
@@ -723,13 +731,21 @@ final class AutoQuitService: ObservableObject {
         closeRequestRunLoopSource = nil
 
         let fullscreenState = fullscreenCloseLock.withLock {
-            let state = (tap: fullscreenCloseTap, runLoop: fullscreenCloseRunLoop)
+            let state = (tap: fullscreenCloseTap, runLoop: fullscreenCloseRunLoop,
+                         pending: pendingFullscreenClose)
             fullscreenCloseGeneration &+= 1
             fullscreenCloseTap = nil
             fullscreenCloseRunLoop = nil
             fullscreenCloseThread = nil
             pendingFullscreenClose = nil
             return state
+        }
+        // A held press must reach its app before a later release bypasses this
+        // tap. A switched-away session must never inject into the new session.
+        if let down = fullscreenState.pending?.down,
+           SessionActivity.shared.isActive,
+           CGEventSource.buttonState(.combinedSessionState, button: .left) {
+            replayFullscreenPress(down, proxy: nil)
         }
         if let tap = fullscreenState.tap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -779,8 +795,19 @@ final class AutoQuitService: ObservableObject {
 
     private func handleCloseRequestEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            fullscreenCloseLock.withLock { pendingFullscreenClose = nil }
-            if let closeRequestTap { CGEvent.tapEnable(tap: closeRequestTap, enable: true) }
+            let shouldRearm = SessionActivitySupport.tapShouldRun(
+                featureWanted: AppFeature.autoQuit.isAvailable
+                    && UserDefaults.standard.bool(forKey: DefaultsKey.autoQuitEnabled),
+                accessibilityGranted: AXIsProcessTrusted(),
+                sessionIsActive: SessionActivity.shared.isActive)
+            if shouldRearm, let closeRequestTap {
+                CGEvent.tapEnable(tap: closeRequestTap, enable: true)
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.stop()
+                    self?.syncWithPreferences()
+                }
+            }
             return Unmanaged.passUnretained(event)
         }
 
@@ -788,8 +815,6 @@ final class AutoQuitService: ObservableObject {
             handleCloseRequestKeyDown(event: event)
             return Unmanaged.passUnretained(event)
         }
-
-        fullscreenCloseLock.withLock { pendingFullscreenClose = nil }
 
         // Accessibility gone (e.g. reset): the AX hit-test below would hang
         // inside the tap and freeze clicks, so let the click through untouched.
@@ -816,37 +841,9 @@ final class AutoQuitService: ObservableObject {
               ) else {
             return Unmanaged.passUnretained(event)
         }
-        let mouseDownTimestamp = event.timestamp
-        fullscreenCloseLock.withLock {
-            pendingFullscreenClose = PendingFullscreenClose(mouseDownTimestamp: mouseDownTimestamp,
-                                                            target: nil)
-        }
         guard AXIsProcessTrusted(),
               let hit = closeButtonHit(at: event.location, candidate: candidate) else {
-            fullscreenCloseLock.withLock {
-                if pendingFullscreenClose?.mouseDownTimestamp == mouseDownTimestamp {
-                    pendingFullscreenClose = nil
-                }
-            }
             return Unmanaged.passUnretained(event)
-        }
-        if let target = hit.fullscreenTarget,
-           let app = NSRunningApplication(processIdentifier: hit.pid),
-           !AutoQuitSupport.isExcepted(bundleIdentifier: app.bundleIdentifier,
-                                        bundleURL: app.bundleURL,
-                                        exceptions: exceptions) {
-            fullscreenCloseLock.withLock {
-                guard pendingFullscreenClose?.mouseDownTimestamp == mouseDownTimestamp,
-                      CGEventSource.buttonState(.combinedSessionState, button: .left) else { return }
-                pendingFullscreenClose = PendingFullscreenClose(mouseDownTimestamp: mouseDownTimestamp,
-                                                                target: target)
-            }
-        } else {
-            fullscreenCloseLock.withLock {
-                if pendingFullscreenClose?.mouseDownTimestamp == mouseDownTimestamp {
-                    pendingFullscreenClose = nil
-                }
-            }
         }
         if let observer = observers[hit.pid] {
             refreshWindows(pid: hit.pid, observer: observer)
@@ -855,35 +852,136 @@ final class AutoQuitService: ObservableObject {
         return Unmanaged.passUnretained(event)
     }
 
-    private func handleFullscreenCloseEvent(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+    private func handleFullscreenCloseEvent(proxy: CGEventTapProxy?,
+                                            type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            let tap: CFMachPort? = fullscreenCloseLock.withLock {
-                guard fullscreenCloseThread === Thread.current else { return nil }
+            let state: (CFMachPort?, PendingFullscreenClose?) = fullscreenCloseLock.withLock {
+                guard fullscreenCloseThread === Thread.current else { return (nil, nil) }
+                let pending = pendingFullscreenClose
                 pendingFullscreenClose = nil
-                return fullscreenCloseTap
+                return (fullscreenCloseTap, pending)
             }
-            if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if let down = state.1?.down,
+               SessionActivity.shared.isActive,
+               CGEventSource.buttonState(.combinedSessionState, button: .left) {
+                replayFullscreenPress(down, proxy: nil)
+            }
+            let shouldRearm = SessionActivitySupport.tapShouldRun(
+                featureWanted: AppFeature.autoQuit.isAvailable
+                    && UserDefaults.standard.bool(forKey: DefaultsKey.autoQuitEnabled),
+                accessibilityGranted: AXIsProcessTrusted(),
+                sessionIsActive: SessionActivity.shared.isActive)
+            if shouldRearm, let tap = state.0 {
+                CGEvent.tapEnable(tap: tap, enable: true)
+            } else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.stop()
+                    self?.syncWithPreferences()
+                }
+            }
             return Unmanaged.passUnretained(event)
         }
 
-        guard type == .leftMouseUp else {
+        guard fullscreenCloseLock.withLock({ fullscreenCloseThread === Thread.current }) else {
             return Unmanaged.passUnretained(event)
         }
-        let target: FullscreenCloseTarget? = fullscreenCloseLock.withLock {
-            guard fullscreenCloseThread === Thread.current else { return nil }
-            defer { pendingFullscreenClose = nil }
-            return pendingFullscreenClose?.target
+        if type == .leftMouseDown {
+            // A press posted when this tap is torn down can revisit the tap
+            // before its mach port is invalidated. Never take it back.
+            if event.getIntegerValueField(.eventSourceUserData) == Self.replayedClosePressMarker {
+                return Unmanaged.passUnretained(event)
+            }
+            // WindowServer geometry is the only press-time lookup. The AX
+            // verification runs on main after this callback has returned.
+            guard event.flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]).isEmpty,
+                  let candidate = WindowServerWindowHitTest.candidate(at: event.location),
+                  WindowServerSupport.contains(event.location, inTrafficLightAreaOf: candidate.frame,
+                                               button: .close),
+                  Self.coversDisplay(candidate.frame, at: event.location),
+                  let down = event.copy() else { return Unmanaged.passUnretained(event) }
+            let generation = fullscreenCloseLock.withLock { () -> UInt in
+                pendingFullscreenClose = PendingFullscreenClose(mouseDownTimestamp: event.timestamp,
+                                                                down: down, target: nil)
+                return fullscreenCloseGeneration
+            }
+            DispatchQueue.main.async { [weak self] in
+                self?.resolveFullscreenClose(at: down.location, timestamp: down.timestamp,
+                                             candidate: TrafficLightCandidate(pid: candidate.pid,
+                                                                              windowID: candidate.windowID),
+                                             generation: generation)
+            }
+            return nil
         }
-        guard let target else { return Unmanaged.passUnretained(event) }
+        let pending = fullscreenCloseLock.withLock { () -> PendingFullscreenClose? in
+            defer { pendingFullscreenClose = nil }
+            return pendingFullscreenClose
+        }
+        guard let pending else { return Unmanaged.passUnretained(event) }
+        if type == .leftMouseDragged {
+            replayFullscreenPress(pending.down, proxy: proxy)
+            return Unmanaged.passUnretained(event)
+        }
+        guard type == .leftMouseUp else { return Unmanaged.passUnretained(event) }
+        guard let target = pending.target else {
+            replayFullscreenPress(pending.down, proxy: proxy)
+            return Unmanaged.passUnretained(event)
+        }
         guard AXIsProcessTrusted(),
               target.buttonFrame.insetBy(dx: -4, dy: -4).contains(event.location),
               Self.boolAttribute(target.window, "AXFullScreen") else {
+            replayFullscreenPress(pending.down, proxy: proxy)
             return Unmanaged.passUnretained(event)
         }
         let actionResult = AXUIElementPerformAction(target.button, kAXPressAction as CFString)
-        return AutoQuitSupport.shouldConsumeFullscreenCloseAction(actionResult)
-            ? nil
-            : Unmanaged.passUnretained(event)
+        if AutoQuitSupport.shouldConsumeFullscreenCloseAction(actionResult) { return nil }
+        replayFullscreenPress(pending.down, proxy: proxy)
+        return Unmanaged.passUnretained(event)
+    }
+
+    private static func coversDisplay(_ frame: CGRect, at point: CGPoint) -> Bool {
+        var display: CGDirectDisplayID = 0
+        var count: UInt32 = 0
+        guard CGGetDisplaysWithPoint(point, 1, &display, &count) == .success,
+              count > 0 else { return false }
+        return AutoQuitSupport.coversDisplay(frame, display: CGDisplayBounds(display))
+    }
+
+    private func replayFullscreenPress(_ down: CGEvent, proxy: CGEventTapProxy?) {
+        // Posting via this proxy places the original press ahead of the drag
+        // or release about to leave this callback, without re-entering our tap.
+        if let proxy { down.tapPostEvent(proxy) }
+        else {
+            down.setIntegerValueField(.eventSourceUserData, value: Self.replayedClosePressMarker)
+            down.post(tap: .cgSessionEventTap)
+        }
+    }
+
+    private func resolveFullscreenClose(at point: CGPoint, timestamp: CGEventTimestamp,
+                                        candidate: TrafficLightCandidate, generation: UInt) {
+        guard running, fullscreenCloseLock.withLock({
+            generation == fullscreenCloseGeneration
+                && pendingFullscreenClose?.mouseDownTimestamp == timestamp
+        }), AXIsProcessTrusted(),
+            let hit = closeButtonHit(at: point, candidate: candidate) else { return }
+        guard fullscreenCloseLock.withLock({
+            generation == fullscreenCloseGeneration
+                && pendingFullscreenClose?.mouseDownTimestamp == timestamp
+        }) else { return }
+        if let observer = observers[hit.pid] { refreshWindows(pid: hit.pid, observer: observer) }
+        markCloseButtonRequest(pid: hit.pid)
+        guard let target = hit.fullscreenTarget,
+              let app = NSRunningApplication(processIdentifier: hit.pid),
+              !AutoQuitSupport.isExcepted(bundleIdentifier: app.bundleIdentifier,
+                                           bundleURL: app.bundleURL,
+                                           exceptions: exceptions) else { return }
+        fullscreenCloseLock.withLock {
+            guard generation == fullscreenCloseGeneration,
+                  pendingFullscreenClose?.mouseDownTimestamp == timestamp,
+                  CGEventSource.buttonState(.combinedSessionState, button: .left),
+                  let down = pendingFullscreenClose?.down else { return }
+            pendingFullscreenClose = PendingFullscreenClose(mouseDownTimestamp: timestamp,
+                                                            down: down, target: target)
+        }
     }
 
     private func handleCloseRequestKeyDown(event: CGEvent) {
@@ -1178,6 +1276,7 @@ private struct FullscreenCloseTarget {
 
 private struct PendingFullscreenClose {
     let mouseDownTimestamp: CGEventTimestamp
+    let down: CGEvent
     let target: FullscreenCloseTarget?
 }
 

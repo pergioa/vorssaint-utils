@@ -1239,6 +1239,13 @@ enum AppManagementFeatureTests {
                 && AutoQuitSupport.shouldConsumeFullscreenCloseAction(.cannotComplete)
                 && !AutoQuitSupport.shouldConsumeFullscreenCloseAction(.actionUnsupported),
                "a fullscreen close consumes success and an indeterminate timeout, but falls back after definite failure")
+        let display = CGRect(x: 100, y: 50, width: 1440, height: 900)
+        suite.expect(AutoQuitSupport.coversDisplay(display, display: display)
+                && AutoQuitSupport.coversDisplay(display.insetBy(dx: 1, dy: 1), display: display)
+                && !AutoQuitSupport.coversDisplay(display.insetBy(dx: 12, dy: 12), display: display)
+                && !AutoQuitSupport.coversDisplay(CGRect(x: 100, y: 50, width: 1200, height: 900),
+                                                  display: display),
+               "only display-filling close-button candidates can have their press held")
         let autoQuitServiceSource = (try? String(
             contentsOfFile: "Sources/Vorssaint/Services/AutoQuit/AutoQuitService.swift",
             encoding: .utf8)) ?? ""
@@ -1310,13 +1317,18 @@ enum AppManagementFeatureTests {
         let fullscreenCloseCode = [
             "options: .listenOnly",
             "private var fullscreenCloseTap: CFMachPort?",
-            "eventsOfInterest: CGEventMask(1 << CGEventType.leftMouseUp.rawValue)",
+            "CGEventMask(1 << CGEventType.leftMouseUp.rawValue)",
+            "CGEventMask(1 << CGEventType.leftMouseDown.rawValue)",
+            "CGEventMask(1 << CGEventType.leftMouseDragged.rawValue)",
             "options: .defaultTap",
             "thread.name = \"Vorssaint Auto Quit Fullscreen Close\"",
             "let runLoop = CFRunLoopGetCurrent()",
             "CFRunLoopAddSource(runLoop, source, .commonModes)",
-            "PendingFullscreenClose(mouseDownTimestamp: mouseDownTimestamp,",
-            "guard fullscreenCloseThread === Thread.current else { return nil }",
+            "PendingFullscreenClose(mouseDownTimestamp: event.timestamp,",
+            "guard fullscreenCloseThread === Thread.current else { return (nil, nil) }",
+            "down.tapPostEvent(proxy)",
+            "Self.coversDisplay(candidate.frame, at: event.location)",
+            "SessionActivity.shared.onChange { [weak self] _ in",
             "CGEventSource.buttonState(.combinedSessionState, button: .left)",
             "Self.boolAttribute(target.window, \"AXFullScreen\")",
             "AutoQuitSupport.shouldConsumeFullscreenCloseAction(actionResult)",
