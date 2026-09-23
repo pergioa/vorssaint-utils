@@ -30,4 +30,9 @@ enum WindowServerTrafficLightHitTest {
                                                   ownProcessID: getpid(),
                                                   pidIsEligible: pidIsEligible)
     }
+
+    static func fullscreenCloseCandidate(at point: CGPoint) -> TrafficLightCandidate? {
+        WindowServerSupport.fullscreenCloseCandidate(in: WindowServerSupport.onScreenWindowInfo(),
+                                                     at: point, ownProcessID: getpid())
+    }
 }

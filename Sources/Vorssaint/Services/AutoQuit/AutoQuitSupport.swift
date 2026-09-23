@@ -81,11 +81,14 @@ enum AutoQuitSupport {
         result == .success || result == .cannotComplete
     }
 
-    /// Only hold a press when WindowServer shows a window filling its display.
-    /// AX still verifies the actual fullscreen close button before acting.
-    static func coversDisplay(_ window: CGRect, display: CGRect) -> Bool {
-        abs(window.minX - display.minX) <= 2 && abs(window.minY - display.minY) <= 2
-            && abs(window.maxX - display.maxX) <= 2 && abs(window.maxY - display.maxY) <= 2
+    /// A cheap gate before copying the WindowServer list. Fullscreen windows
+    /// on camera-housing displays can begin below the safe area, so include it
+    /// here; the window's own button area and AX are checked after this.
+    static func mayContainFullscreenClose(_ point: CGPoint, display: CGRect,
+                                          safeAreaTop: CGFloat) -> Bool {
+        point.x >= display.minX - 6 && point.x <= display.minX + 52
+            && point.y >= display.minY - 6
+            && point.y <= display.minY + 46 + safeAreaTop
     }
 
     static func shouldQuitAfterWindowCheck(hadWindows: Bool,

@@ -3532,6 +3532,30 @@ enum SwitcherModelFeatureTests {
                                                    ownProcessID: 501,
                                                    pidIsEligible: { $0 != 1001 })?.pid == 1002,
                "the click lookup carries on behind a window it was told to leave alone")
+        var menuCover = windowServerEntry(CGRect(x: 0, y: 0, width: 52, height: 32),
+                                          pid: 1500, number: 13)
+        menuCover[kCGWindowLayer as String] = NSNumber(value: 25)
+        var invisibleCover = menuCover
+        invisibleCover[kCGWindowAlpha as String] = NSNumber(value: 0)
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [menuCover, scannedStack[0]], at: scannedCloseButtonPoint,
+            ownProcessID: 501) == nil,
+            "a visible menu over a fullscreen red button keeps its mouse press")
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [invisibleCover, scannedStack[0]], at: scannedCloseButtonPoint,
+            ownProcessID: 501)?.pid == 1001,
+            "an invisible overlay does not hide a fullscreen close candidate")
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [windowServerEntry(CGRect(x: 0, y: 0, width: 52, height: 32),
+                                   pid: 501, number: 14), scannedStack[0]],
+            at: scannedCloseButtonPoint, ownProcessID: 501) == nil,
+            "even a small window of our own process in front blocks the close press")
+        let cameraInsetWindow = windowServerEntry(
+            CGRect(x: 100, y: 38, width: 1440, height: 862), pid: 1001, number: 15)
+        suite.expect(WindowServerSupport.fullscreenCloseCandidate(
+            in: [cameraInsetWindow], at: CGPoint(x: 120, y: 55),
+            ownProcessID: 501)?.pid == 1001,
+            "a fullscreen window below a camera housing still has a close-button candidate")
 
         // Unlike the click scan, hover must stop at our interactive surfaces
         // before making any Accessibility call, even for a tiny raised panel.

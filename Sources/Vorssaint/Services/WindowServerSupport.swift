@@ -118,6 +118,26 @@ enum WindowServerSupport {
         return nil
     }
 
+    /// An active tap must not hold a press meant for a menu, overlay, or another
+    /// app in front of the fullscreen window. Unlike the ordinary close probe,
+    /// even a nonzero-layer window covering this point blocks the candidate.
+    static func fullscreenCloseCandidate(in windows: [[String: Any]],
+                                         at point: CGPoint,
+                                         ownProcessID: pid_t) -> TrafficLightCandidate? {
+        for window in windows {
+            guard let bounds = bounds(from: window), bounds.contains(point),
+                  (window[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1 > 0 else { continue }
+            guard let layer = (window[kCGWindowLayer as String] as? NSNumber)?.intValue,
+                  layer == 0, bounds.width >= 80, bounds.height >= 80,
+                  let pid = (window[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value,
+                  pid != ownProcessID,
+                  let number = (window[kCGWindowNumber as String] as? NSNumber)?.uint32Value,
+                  contains(point, inTrafficLightAreaOf: bounds, button: .close) else { return nil }
+            return TrafficLightCandidate(pid: pid, windowID: CGWindowID(number))
+        }
+        return nil
+    }
+
     static func contains(_ point: CGPoint,
                          inTrafficLightAreaOf bounds: CGRect,
                          button: TrafficLightButton) -> Bool {
